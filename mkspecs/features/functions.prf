@@ -22,7 +22,7 @@ defineReplace(which) {
       out = $$executable
     }
     for(arg, command): !equals(arg, $$executable): out += $$arg
-  } else:unix {
+  } else:unix|os2 {
     command = $$split(out, " ")
     executable = $$first(command)
     out = $$system("which $$executable 2>/dev/null")
@@ -57,7 +57,7 @@ defineReplace(pythonPathForSystem) {
 defineReplace(ninjaPath) {
     src_3rd_party_dir = $$absolute_path("$${getChromiumSrcDir()}/../", "$$QTWEBENGINE_ROOT")
     out = $$shadowed($$absolute_path(ninja/ninja, $$src_3rd_party_dir))
-    win32: out = $${out}.exe
+    win32|os2: out = $${out}.exe
     return($$out)
 }
 
@@ -65,7 +65,7 @@ defineReplace(gnPath) {
     src_3rd_party_dir = $$absolute_path("$${getChromiumSrcDir()}/../", "$$QTWEBENGINE_ROOT")
     out = $$shadowed($$absolute_path(gn/out/Release/gn, $$src_3rd_party_dir))
 
-    win32: out = $${out}.exe
+    win32|os2: out = $${out}.exe
     return($$out)
 }
 
@@ -73,6 +73,7 @@ defineReplace(gnArgs) {
     linux: include($$QTWEBENGINE_ROOT/src/core/config/linux.pri)
     macos: include($$QTWEBENGINE_ROOT/src/core/config/mac_osx.pri)
     win32: include($$QTWEBENGINE_ROOT/src/core/config/windows.pri)
+    os2: include($$QTWEBENGINE_ROOT/src/core/config/os2.pri)
     isEmpty(gn_args): error(No gn_args found please make sure you have valid configuration.)
     return($$gn_args)
 }
