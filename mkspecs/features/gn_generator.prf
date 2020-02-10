@@ -19,7 +19,7 @@ defineReplace(filter_flag_values) {
         # the architecture itself.
         return("")
     }
-    return($$value_to_check)
+    return($$replace(value_to_check,\",\\\"))
 }
 
 isEmpty(GN_FILE): GN_FILE = $$system_path($$_PRO_FILE_PWD_/BUILD.gn)
