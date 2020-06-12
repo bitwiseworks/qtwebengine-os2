@@ -82,14 +82,6 @@ const char kWidevineCdmFileName[] =
 #endif
 #endif
 
-#if QT_CONFIG(webengine_printing_and_pdf)
-#include "pdf/pdf.h"
-#include "pdf/pdf_ppapi.h"
-const char kPdfPluginMimeType[] = "application/x-google-chrome-pdf";
-const char kPdfPluginPath[] = "internal-pdf-viewer/";
-const char kPdfPluginSrc[] = "src";
-#endif // QT_CONFIG(webengine_printing_and_pdf)
-
 static QString webenginePluginsPath()
 {
     // Look for plugins in /plugins/webengine or application dir.
@@ -103,6 +95,14 @@ static QString webenginePluginsPath()
     return potentialPluginsPath;
 }
 #endif  // BUILDFLAG(ENABLE_LIBRARY_CDMS)
+
+#if QT_CONFIG(webengine_printing_and_pdf)
+#include "pdf/pdf.h"
+#include "pdf/pdf_ppapi.h"
+const char kPdfPluginMimeType[] = "application/x-google-chrome-pdf";
+const char kPdfPluginPath[] = "internal-pdf-viewer/";
+const char kPdfPluginSrc[] = "src";
+#endif // QT_CONFIG(webengine_printing_and_pdf)
 
 #if defined(Q_OS_WIN)
 #include <shlobj.h>

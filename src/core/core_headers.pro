@@ -1,4 +1,5 @@
 TARGET = QtWebEngineCore
+TARGET_SHORT = QtWebC
 CONFIG += no_private_module header_module internal_module no_plist
 QT -= core gui
 MODULE = webenginecoreheaders

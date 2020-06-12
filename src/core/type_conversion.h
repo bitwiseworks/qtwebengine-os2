@@ -77,7 +77,7 @@ namespace QtWebEngineCore {
 
 inline QString toQt(const base::string16 &string)
 {
-#if defined(OS_WIN)
+#if defined(OS_WIN) || defined(OS_OS2)
     return QString::fromStdWString(string.data());
 #else
     return QString::fromUtf16(string.data());
@@ -102,7 +102,7 @@ inline QString toQt(const std::string &string)
 
 inline base::string16 toString16(const QString &qString)
 {
-#if defined(OS_WIN)
+#if defined(OS_WIN) || defined(OS_OS2)
     return base::string16(qString.toStdWString());
 #else
     return base::string16(qString.utf16());
@@ -231,6 +231,8 @@ inline base::FilePath::StringType toFilePathString(const QString &str)
 {
 #if defined(OS_WIN)
     return QDir::toNativeSeparators(str).toStdWString();
+#elif defined(OS_OS2)
+    return QDir::toNativeSeparators(str).toStdString();
 #else
     return str.toStdString();
 #endif

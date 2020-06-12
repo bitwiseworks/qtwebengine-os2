@@ -1,4 +1,5 @@
 TARGET      = qwebengineview
+TARGET_SHORT = qtwebv
 QT         += designer webenginewidgets
 
 PLUGIN_CLASS_NAME = QWebEngineViewPlugin

@@ -43,7 +43,7 @@
 
 #include "gl_surface_qt.h"
 
-#if !defined(OS_MACOSX)
+#if !defined(OS_MACOSX) && !defined(OS_OS2)
 
 #include <QGuiApplication>
 #include "gl_context_qt.h"
@@ -226,4 +226,4 @@ bool DirectCompositionSurfaceWin::IsHDRSupported()
 }
 } // namespace gpu
 #endif
-#endif // !defined(OS_MACOSX)
+#endif // !defined(OS_MACOSX) && !defined(OS_OS2)

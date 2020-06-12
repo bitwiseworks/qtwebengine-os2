@@ -2,6 +2,7 @@ include($$QTWEBENGINE_OUT_ROOT/src/core/qtwebenginecore-config.pri)
 QT_FOR_CONFIG += webenginecore-private
 
 TARGET = QtWebEngineWidgets
+TARGET_SHORT = QtWebW
 
 # For our export macros
 DEFINES += QT_BUILD_WEBENGINEWIDGETS_LIB

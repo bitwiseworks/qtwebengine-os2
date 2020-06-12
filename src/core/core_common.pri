@@ -5,6 +5,7 @@ QT_FOR_CONFIG += webenginecore webenginecore-private
 # gyp/ninja will take care of the compilation, qmake/make will finish with linking and install.
 
 TARGET = QtWebEngineCore
+TARGET_SHORT = QtWebC
 QT += qml-private quick-private gui-private core-private
 QT_PRIVATE += webenginecoreheaders-private
 

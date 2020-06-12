@@ -1,5 +1,6 @@
 CXX_MODULE = qml
 TARGET = qtwebengineplugin
+TARGET_SHORT = qtwebp
 TARGETPATH = QtWebEngine
 IMPORT_VERSION = 1.9
 

@@ -2,6 +2,7 @@ include($$QTWEBENGINE_OUT_ROOT/src/webengine/qtwebengine-config.pri)
 QT_FOR_CONFIG += webengine-private
 
 TARGET = QtWebEngine
+TARGET_SHORT = QtWebE
 MODULE = webengine
 
 # For our export macros
