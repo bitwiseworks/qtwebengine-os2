@@ -21,6 +21,9 @@ LIBS_PRIVATE += $$NINJA_LIB_DIRS $$NINJA_LIBS
 QMAKE_LFLAGS += $$NINJA_LFLAGS
 POST_TARGETDEPS += $$NINJA_TARGETDEPS
 
+# Qt uses shared_library for convert_dict which adds -Zdll on OS/2, remove it.
+os2:QMAKE_LFLAGS -= -Zdll
+
 # Fixme: -Werror=unused-parameter in core
 QMAKE_CXXFLAGS_WARN_ON =
 

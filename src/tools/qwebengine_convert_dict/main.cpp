@@ -50,7 +50,7 @@ inline base::FilePath toFilePath(const QString &str)
 
 inline QString toQt(const base::string16 &string)
 {
-#if defined(OS_WIN)
+#if defined(OS_WIN) || defined(OS_OS2)
     return QString::fromStdWString(string.data());
 #else
     return QString::fromUtf16(string.data());
