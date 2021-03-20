@@ -39,9 +39,9 @@
 
 #include "content_utility_client_qt.h"
 
-#include "base/bind.h"
-#include "content/public/utility/utility_thread.h"
-#include "services/proxy_resolver/proxy_resolver_service.h"
+#include "base/no_destructor.h"
+#include "mojo/public/cpp/bindings/service_factory.h"
+#include "services/proxy_resolver/proxy_resolver_factory_impl.h"
 
 namespace QtWebEngineCore {
 
@@ -51,41 +51,17 @@ ContentUtilityClientQt::ContentUtilityClientQt()
 
 ContentUtilityClientQt::~ContentUtilityClientQt() = default;
 
-namespace {
-
-std::unique_ptr<service_manager::Service> CreateProxyResolverService(service_manager::mojom::ServiceRequest request)
+auto RunProxyResolver(mojo::PendingReceiver<proxy_resolver::mojom::ProxyResolverFactory> receiver)
 {
-    return std::make_unique<proxy_resolver::ProxyResolverService>(std::move(request));
+    return std::make_unique<proxy_resolver::ProxyResolverFactoryImpl>(std::move(receiver));
 }
 
-using ServiceFactory = base::OnceCallback<std::unique_ptr<service_manager::Service>()>;
-void RunServiceOnIOThread(ServiceFactory factory)
+mojo::ServiceFactory *ContentUtilityClientQt::GetIOThreadServiceFactory()
 {
-    base::OnceClosure terminate_process = base::BindOnce(
-                base::IgnoreResult(&base::SequencedTaskRunner::PostTask),
-                base::SequencedTaskRunnerHandle::Get(), FROM_HERE,
-                base::BindOnce([] { content::UtilityThread::Get()->ReleaseProcess(); }));
-    content::ChildThread::Get()->GetIOTaskRunner()->PostTask(
-                FROM_HERE,
-                base::BindOnce(
-                    [](ServiceFactory factory, base::OnceClosure terminate_process) {
-                        service_manager::Service::RunAsyncUntilTermination(
-                                std::move(factory).Run(), std::move(terminate_process));
-                    },
-                    std::move(factory), std::move(terminate_process)));
-}
-
-}  // namespace
-
-bool ContentUtilityClientQt::HandleServiceRequest(const std::string &service_name,
-                                                  service_manager::mojom::ServiceRequest request)
-{
-    if (service_name == proxy_resolver::mojom::kProxyResolverServiceName) {
-        RunServiceOnIOThread(base::BindOnce(&CreateProxyResolverService, std::move(request)));
-        return true;
-    }
-
-    return false;
+    static base::NoDestructor<mojo::ServiceFactory> factory {
+        RunProxyResolver,
+    };
+    return factory.get();
 }
 
 } // namespace

@@ -125,6 +125,11 @@ void tst_InspectorServer::testPageList()
 
 void tst_InspectorServer::testRemoteDebuggingMessage()
 {
+    const QUrl testPageUrl = QUrl::fromLocalFile(QLatin1String(TESTS_SOURCE_DIR "/html/basic_page.html"));
+    QSignalSpy loadSpy(webView(), SIGNAL(loadingChanged(QQuickWebEngineLoadRequest*)));
+    webView()->setUrl(testPageUrl);
+    QTRY_VERIFY(loadSpy.size() && !webView()->isLoading());
+
     QJsonArray pageList = fetchPageList();
     QCOMPARE(pageList.size(), 1);
     QVERIFY(pageList.at(0).toObject().contains("webSocketDebuggerUrl"));
@@ -154,6 +159,11 @@ void tst_InspectorServer::testRemoteDebuggingMessage()
 
 void tst_InspectorServer::openRemoteDebuggingSession()
 {
+    const QUrl testPageUrl = QUrl::fromLocalFile(QLatin1String(TESTS_SOURCE_DIR "/html/basic_page.html"));
+    QSignalSpy loadSpy(webView(), SIGNAL(loadingChanged(QQuickWebEngineLoadRequest*)));
+    webView()->setUrl(testPageUrl);
+    QTRY_VERIFY(loadSpy.size() && !webView()->isLoading());
+
     QJsonArray pageList = fetchPageList();
     QCOMPARE(pageList.size(), 1);
     QVERIFY(pageList.at(0).toObject().contains("devtoolsFrontendUrl"));
@@ -167,7 +177,7 @@ void tst_InspectorServer::openRemoteDebuggingSession()
     // - The page list didn't return a valid inspector URL
     // - Or the front-end couldn't be loaded through the inspector HTTP server
     // - Or the web socket connection couldn't be established between the front-end and the page through the inspector server
-    QTRY_VERIFY_WITH_TIMEOUT(inspectorWebView->title().startsWith("DevTools -"), 20000);
+    QTRY_VERIFY_WITH_TIMEOUT(inspectorWebView->title().startsWith("DevTools -"), 30000);
 }
 
 QTEST_MAIN(tst_InspectorServer)

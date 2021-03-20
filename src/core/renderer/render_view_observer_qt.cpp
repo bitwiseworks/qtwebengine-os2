@@ -41,7 +41,6 @@
 
 #include "common/qt_messages.h"
 
-#include "components/web_cache/renderer/web_cache_impl.h"
 #include "content/public/renderer/render_view.h"
 #include "third_party/blink/public/web/web_document.h"
 #include "third_party/blink/public/web/web_element.h"
@@ -51,20 +50,15 @@
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "third_party/blink/public/web/web_view.h"
 
-RenderViewObserverQt::RenderViewObserverQt(
-        content::RenderView* render_view,
-        web_cache::WebCacheImpl* web_cache_impl)
-    : content::RenderViewObserver(render_view)
-    , m_web_cache_impl(web_cache_impl)
-{
-}
+RenderViewObserverQt::RenderViewObserverQt(content::RenderView *render_view) : content::RenderViewObserver(render_view)
+{}
 
 void RenderViewObserverQt::onFetchDocumentMarkup(quint64 requestId)
 {
     blink::WebString markup;
     if (render_view()->GetWebView()->MainFrame()->IsWebLocalFrame())
         markup = blink::WebFrameContentDumper::DumpAsMarkup(
-                    static_cast<blink::WebLocalFrame*>(render_view()->GetWebView()->MainFrame()));
+                static_cast<blink::WebLocalFrame *>(render_view()->GetWebView()->MainFrame()));
     Send(new RenderViewObserverHostQt_DidFetchDocumentMarkup(routing_id(), requestId, markup.Utf16()));
 }
 
@@ -72,15 +66,14 @@ void RenderViewObserverQt::onFetchDocumentInnerText(quint64 requestId)
 {
     blink::WebString text;
     if (render_view()->GetWebView()->MainFrame()->IsWebLocalFrame())
-        text = blink::WebFrameContentDumper::DumpWebViewAsText(
-                    render_view()->GetWebView(),
-                    std::numeric_limits<std::size_t>::max());
+        text = blink::WebFrameContentDumper::DumpWebViewAsText(render_view()->GetWebView(),
+                                                               std::numeric_limits<std::size_t>::max());
     Send(new RenderViewObserverHostQt_DidFetchDocumentInnerText(routing_id(), requestId, text.Utf16()));
 }
 
 void RenderViewObserverQt::onSetBackgroundColor(quint32 color)
 {
-    render_view()->GetWebView()->SetBaseBackgroundColor(color);
+    render_view()->GetWebView()->SetBaseBackgroundColorOverride(color);
 }
 
 void RenderViewObserverQt::OnDestruct()
@@ -88,7 +81,7 @@ void RenderViewObserverQt::OnDestruct()
     delete this;
 }
 
-bool RenderViewObserverQt::OnMessageReceived(const IPC::Message& message)
+bool RenderViewObserverQt::OnMessageReceived(const IPC::Message &message)
 {
     bool handled = true;
     IPC_BEGIN_MESSAGE_MAP(RenderViewObserverQt, message)
@@ -98,10 +91,4 @@ bool RenderViewObserverQt::OnMessageReceived(const IPC::Message& message)
         IPC_MESSAGE_UNHANDLED(handled = false)
     IPC_END_MESSAGE_MAP()
     return handled;
-}
-
-void RenderViewObserverQt::Navigate(const GURL &)
-{
-    if (m_web_cache_impl)
-        m_web_cache_impl->ExecutePendingClearCache();
 }

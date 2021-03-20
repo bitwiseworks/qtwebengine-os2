@@ -42,6 +42,7 @@
 
 #include "base/memory/ref_counted.h"
 #include "base/observer_list.h"
+#include "base/single_thread_task_runner.h"
 
 #include "net/proxy_resolution/proxy_config.h"
 #include "net/proxy_resolution/proxy_config_service.h"
@@ -50,16 +51,17 @@
 
 #include <QNetworkProxy>
 
-class ProxyConfigServiceQt
-        : public net::ProxyConfigService
-        , public net::ProxyConfigService::Observer {
-public:
+class PrefService;
 
+class ProxyConfigServiceQt
+    : public net::ProxyConfigService
+    , public net::ProxyConfigService::Observer
+{
+public:
     static net::ProxyServer fromQNetworkProxy(const QNetworkProxy &);
 
-    explicit ProxyConfigServiceQt(std::unique_ptr<ProxyConfigService> baseService,
-                                  const net::ProxyConfigWithAnnotation& initialConfig,
-                                  ProxyPrefs::ConfigState initialState);
+    explicit ProxyConfigServiceQt(PrefService *prefService,
+                                  const scoped_refptr<base::SingleThreadTaskRunner> &taskRunner);
     ~ProxyConfigServiceQt() override;
 
     // ProxyConfigService implementation:
@@ -92,7 +94,9 @@ private:
 
     // Configuration as defined by prefs.
     net::ProxyConfigWithAnnotation m_prefConfig;
-    ProxyPrefs::ConfigState m_perfState;
+    ProxyPrefs::ConfigState m_prefState;
+
+    SEQUENCE_CHECKER(m_sequenceChecker);
 
     DISALLOW_COPY_AND_ASSIGN(ProxyConfigServiceQt);
 };

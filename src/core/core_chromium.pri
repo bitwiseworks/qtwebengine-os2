@@ -50,25 +50,25 @@ SOURCES = \
         clipboard_qt.cpp \
         color_chooser_qt.cpp \
         color_chooser_controller.cpp \
-        command_line_pref_store_qt.cpp \
         common/qt_ipc_logging.cpp \
         common/qt_messages.cpp \
         common/user_script_data.cpp \
-        compositor/chromium_gpu_helper.cpp \
-        compositor/compositor.cpp \
-        compositor/compositor_resource_tracker.cpp \
         compositor/content_gpu_client_qt.cpp \
-        compositor/delegated_frame_node.cpp \
+        compositor/display_frame_sink.cpp \
+        compositor/display_overrides.cpp \
+        compositor/display_software_output_surface.cpp \
         content_client_qt.cpp \
         content_browser_client_qt.cpp \
         content_main_delegate_qt.cpp \
         content_utility_client_qt.cpp \
+        delegated_frame_host_client_qt.cpp \
         desktop_screen_qt.cpp \
         devtools_frontend_qt.cpp \
         devtools_manager_delegate_qt.cpp \
         download_manager_delegate_qt.cpp \
         favicon_manager.cpp \
         file_picker_controller.cpp \
+        find_text_helper.cpp \
         javascript_dialog_controller.cpp \
         javascript_dialog_manager_qt.cpp \
         login_delegate_qt.cpp \
@@ -77,16 +77,16 @@ SOURCES = \
         net/client_cert_override.cpp \
         net/client_cert_store_data.cpp \
         net/cookie_monster_delegate_qt.cpp \
-        net/custom_protocol_handler.cpp \
-        net/network_delegate_qt.cpp \
+        net/custom_url_loader_factory.cpp \
+        net/proxy_config_monitor.cpp \
         net/proxy_config_service_qt.cpp \
+        net/proxying_url_loader_factory_qt.cpp \
+        net/proxying_restricted_cookie_manager_qt.cpp \
         net/qrc_url_scheme_handler.cpp \
         net/ssl_host_state_delegate_qt.cpp \
-        net/url_request_context_getter_qt.cpp \
-        net/url_request_custom_job.cpp \
+        net/system_network_context_manager.cpp \
         net/url_request_custom_job_delegate.cpp \
         net/url_request_custom_job_proxy.cpp \
-        net/url_request_notification.cpp \
         net/webui_controller_factory_qt.cpp \
         ozone/gl_context_qt.cpp \
         ozone/gl_ozone_egl_qt.cpp \
@@ -104,6 +104,7 @@ SOURCES = \
         profile_io_data_qt.cpp \
         quota_permission_context_qt.cpp \
         quota_request_controller_impl.cpp \
+        pref_service_adapter.cpp \
         register_protocol_handler_request_controller_impl.cpp \
         render_view_context_menu_qt.cpp \
         render_widget_host_view_qt.cpp \
@@ -113,11 +114,11 @@ SOURCES = \
         renderer/render_view_observer_qt.cpp \
         renderer/render_thread_observer_qt.cpp \
         renderer/user_resource_controller.cpp \
+        renderer/plugins/plugin_placeholder_qt.cpp \
         renderer_host/render_view_observer_host_qt.cpp \
         renderer_host/user_resource_controller_host.cpp \
         resource_bundle_qt.cpp \
         resource_context_qt.cpp \
-        service/service_qt.cpp \
         touch_handle_drawable_qt.cpp \
         touch_selection_controller_client_qt.cpp \
         touch_selection_menu_controller.cpp \
@@ -150,47 +151,43 @@ HEADERS = \
         client_cert_select_controller.h \
         clipboard_change_observer.h \
         clipboard_qt.h \
-        command_line_pref_store_qt.h \
         color_chooser_qt.h \
         color_chooser_controller_p.h \
         color_chooser_controller.h \
         common/qt_messages.h \
         common/user_script_data.h \
-        compositor/chromium_gpu_helper.h \
-        compositor/compositor.h \
-        compositor/compositor_resource.h \
-        compositor/compositor_resource_tracker.h \
         compositor/content_gpu_client_qt.h \
-        compositor/delegated_frame_node.h \
+        compositor/display_frame_sink.h \
+        compositor/display_software_output_surface.h \
         content_client_qt.h \
         content_browser_client_qt.h \
         content_main_delegate_qt.h \
         content_utility_client_qt.h \
+        delegated_frame_host_client_qt.h \
         desktop_screen_qt.h \
         devtools_frontend_qt.h \
         devtools_manager_delegate_qt.h \
         download_manager_delegate_qt.h \
         favicon_manager.h \
         file_picker_controller.h \
+        find_text_helper.h \
         global_descriptors_qt.h \
         javascript_dialog_controller_p.h \
         javascript_dialog_controller.h \
         javascript_dialog_manager_qt.h \
-        locked_ptr.h \
         login_delegate_qt.h \
         media_capture_devices_dispatcher.h \
         net/client_cert_override.h \
         net/client_cert_store_data.h \
         net/cookie_monster_delegate_qt.h \
-        net/custom_protocol_handler.h \
-        net/network_delegate_qt.h \
+        net/custom_url_loader_factory.h \
+        net/proxying_url_loader_factory_qt.h \
+        net/proxying_restricted_cookie_manager_qt.h \
         net/qrc_url_scheme_handler.h \
         net/ssl_host_state_delegate_qt.h \
-        net/url_request_context_getter_qt.h \
-        net/url_request_custom_job.h \
+        net/system_network_context_manager.h \
         net/url_request_custom_job_delegate.h \
         net/url_request_custom_job_proxy.h \
-        net/url_request_notification.h \
         net/webui_controller_factory_qt.h \
         ozone/gl_context_qt.h \
         ozone/gl_ozone_egl_qt.h \
@@ -201,11 +198,13 @@ HEADERS = \
         ozone/surface_factory_qt.h \
         permission_manager_qt.h \
         platform_notification_service_qt.h \
+        pref_service_adapter.h \
         process_main.h \
         profile_adapter.h \
         profile_adapter_client.h \
         profile_qt.h \
         profile_io_data_qt.h \
+        proxy_config_monitor.h \
         proxy_config_service_qt.h \
         quota_permission_context_qt.h \
         quota_request_controller.h \
@@ -221,11 +220,11 @@ HEADERS = \
         renderer/render_view_observer_qt.h \
         renderer/render_thread_observer_qt.h \
         renderer/user_resource_controller.h \
+        renderer/plugins/plugin_placeholder_qt.h \
         renderer_host/render_view_observer_host_qt.h \
         renderer_host/user_resource_controller_host.h \
         request_controller.h \
         resource_context_qt.h \
-        service/service_qt.h \
         touch_handle_drawable_client.h \
         touch_handle_drawable_qt.h \
         touch_selection_controller_client_qt.h \
@@ -244,7 +243,6 @@ HEADERS = \
         web_engine_settings.h \
         web_event_factory.h
 
-
 qtConfig(webengine-ozone-x11) {
     HEADERS += ozone/gl_ozone_glx_qt.h \
                ozone/gl_surface_glx_qt.h
@@ -259,14 +257,16 @@ qtConfig(webengine-pepper-plugins) {
         renderer_host/pepper/pepper_host_factory_qt.cpp \
         renderer_host/pepper/pepper_isolated_file_system_message_filter.cpp \
         renderer/pepper/pepper_flash_renderer_host_qt.cpp \
-        renderer/pepper/pepper_renderer_host_factory_qt.cpp
+        renderer/pepper/pepper_renderer_host_factory_qt.cpp \
+        renderer/plugins/loadable_plugin_placeholder_qt.cpp
 
     HEADERS += \
         renderer_host/pepper/pepper_flash_browser_host_qt.h \
         renderer_host/pepper/pepper_host_factory_qt.h \
         renderer_host/pepper/pepper_isolated_file_system_message_filter.h \
         renderer/pepper/pepper_flash_renderer_host_qt.h \
-        renderer/pepper/pepper_renderer_host_factory_qt.h
+        renderer/pepper/pepper_renderer_host_factory_qt.h \
+        renderer/plugins/loadable_plugin_placeholder_qt.h
 }
 
 qtConfig(webengine-printing-and-pdf) {
@@ -291,13 +291,15 @@ qtConfig(webengine-printing-and-pdf) {
 contains(QT_CONFIG, opengl) {
     SOURCES += \
         compositor/compositor_resource_fence.cpp \
-        compositor/stream_video_node.cpp \
-        compositor/yuv_video_node.cpp
-
+        compositor/display_gl_output_surface.cpp \
+        compositor/display_gl_output_surface_qsg.cpp
     HEADERS += \
         compositor/compositor_resource_fence.h \
-        compositor/stream_video_node.h \
-        compositor/yuv_video_node.h
+        compositor/display_gl_output_surface.h
+    macos {
+        HEADERS+=macos_context_type_helper.h
+        SOURCES+=macos_context_type_helper.mm
+    }
 }
 
 qtConfig(webengine-geolocation) {
@@ -322,14 +324,13 @@ qtConfig(webengine-extensions) {
         extensions/extension_system_factory_qt.cpp \
         extensions/extension_web_contents_observer_qt.cpp \
         extensions/extensions_api_client_qt.cpp \
-        extensions/extensions_browser_api_provider_qt.cpp \
         extensions/extensions_browser_client_qt.cpp \
         extensions/mime_handler_view_guest_delegate_qt.cpp \
+        net/plugin_response_interceptor_url_loader_throttle.cpp \
         renderer/extensions/extensions_dispatcher_delegate_qt.cpp \
         renderer/extensions/extensions_renderer_client_qt.cpp \
         renderer/extensions/renderer_permissions_policy_delegate_qt.cpp \
-        renderer/extensions/resource_request_policy_qt.cpp \
-        renderer_host/resource_dispatcher_host_delegate_qt.cpp
+        renderer/extensions/resource_request_policy_qt.cpp
 
     HEADERS += \
         common/extensions/extensions_api_provider_qt.h \
@@ -339,12 +340,11 @@ qtConfig(webengine-extensions) {
         extensions/extension_system_factory_qt.h \
         extensions/extension_web_contents_observer_qt.h \
         extensions/extensions_api_client_qt.h \
-        extensions/extensions_browser_api_provider_qt.h \
         extensions/extensions_browser_client_qt.h \
         extensions/mime_handler_view_guest_delegate_qt.h \
+        net/plugin_response_interceptor_url_loader_throttle.h \
         renderer/extensions/extensions_dispatcher_delegate_qt.h \
         renderer/extensions/extensions_renderer_client_qt.h \
         renderer/extensions/renderer_permissions_policy_delegate_qt.h \
-        renderer/extensions/resource_request_policy_qt.h \
-        renderer_host/resource_dispatcher_host_delegate_qt.h
+        renderer/extensions/resource_request_policy_qt.h
 }

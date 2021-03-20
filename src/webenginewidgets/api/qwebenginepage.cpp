@@ -45,12 +45,14 @@
 #include "certificate_error_controller.h"
 #include "color_chooser_controller.h"
 #include "favicon_manager.h"
+#include "find_text_helper.h"
 #include "file_picker_controller.h"
 #include "javascript_dialog_controller.h"
 #if QT_CONFIG(webengine_printing_and_pdf)
 #include "printer_worker.h"
 #endif
 #include "qwebenginecertificateerror.h"
+#include "qwebenginefindtextresult.h"
 #include "qwebenginefullscreenrequest.h"
 #include "qwebenginehistory.h"
 #include "qwebenginehistory_p.h"
@@ -125,27 +127,6 @@ static QWebEnginePage::WebWindowType toWindowType(WebContentsAdapterClient::Wind
     }
 }
 
-QWebEnginePage::WebAction editorActionForKeyEvent(QKeyEvent* event)
-{
-    static struct {
-        QKeySequence::StandardKey standardKey;
-        QWebEnginePage::WebAction action;
-    } editorActions[] = {
-        { QKeySequence::Cut, QWebEnginePage::Cut },
-        { QKeySequence::Copy, QWebEnginePage::Copy },
-        { QKeySequence::Paste, QWebEnginePage::Paste },
-        { QKeySequence::Undo, QWebEnginePage::Undo },
-        { QKeySequence::Redo, QWebEnginePage::Redo },
-        { QKeySequence::SelectAll, QWebEnginePage::SelectAll },
-        { QKeySequence::UnknownKey, QWebEnginePage::NoWebAction }
-    };
-    for (int i = 0; editorActions[i].standardKey != QKeySequence::UnknownKey; ++i)
-        if (event == editorActions[i].standardKey)
-            return editorActions[i].action;
-
-    return QWebEnginePage::NoWebAction;
-}
-
 QWebEnginePagePrivate::QWebEnginePagePrivate(QWebEngineProfile *_profile)
     : adapter(QSharedPointer<WebContentsAdapter>::create())
     , history(new QWebEngineHistory(new QWebEngineHistoryPrivate(this)))
@@ -161,7 +142,6 @@ QWebEnginePagePrivate::QWebEnginePagePrivate(QWebEngineProfile *_profile)
     , webChannelWorldId(QWebEngineScript::MainWorld)
     , defaultAudioMuted(false)
     , defaultZoomFactor(1.0)
-    , requestInterceptor(nullptr)
 #if QT_CONFIG(webengine_printing_and_pdf)
     , currentPrinter(nullptr)
 #endif
@@ -170,12 +150,12 @@ QWebEnginePagePrivate::QWebEnginePagePrivate(QWebEngineProfile *_profile)
 
     qRegisterMetaType<QWebEngineQuotaRequest>();
     qRegisterMetaType<QWebEngineRegisterProtocolHandlerRequest>();
+    qRegisterMetaType<QWebEngineFindTextResult>();
 
-    // See wasShown() and wasHidden().
+    // See setVisible().
     wasShownTimer.setSingleShot(true);
     QObject::connect(&wasShownTimer, &QTimer::timeout, [this](){
         ensureInitialized();
-        wasShown();
     });
 
     profile->d_ptr->addWebContentsAdapterClient(this);
@@ -183,8 +163,6 @@ QWebEnginePagePrivate::QWebEnginePagePrivate(QWebEngineProfile *_profile)
 
 QWebEnginePagePrivate::~QWebEnginePagePrivate()
 {
-    if (requestInterceptor)
-        profile->d_ptr->profileAdapter()->removePageRequestInterceptor();
     delete history;
     delete settings;
     profile->d_ptr->removeWebContentsAdapterClient(this);
@@ -214,6 +192,8 @@ void QWebEnginePagePrivate::initializationFinished()
         adapter->setAudioMuted(defaultAudioMuted);
     if (!qFuzzyCompare(adapter->currentZoomFactor(), defaultZoomFactor))
         adapter->setZoomFactor(defaultZoomFactor);
+    if (view)
+        adapter->setVisible(view->isVisible());
 
     scriptCollection.d->initializationFinished(adapter);
 
@@ -226,11 +206,14 @@ void QWebEnginePagePrivate::titleChanged(const QString &title)
     Q_EMIT q->titleChanged(title);
 }
 
-void QWebEnginePagePrivate::urlChanged(const QUrl &url)
+void QWebEnginePagePrivate::urlChanged()
 {
     Q_Q(QWebEnginePage);
-    explicitUrl = QUrl();
-    Q_EMIT q->urlChanged(url);
+    QUrl qurl = adapter->activeUrl();
+    if (url != qurl) {
+        url = qurl;
+        Q_EMIT q->urlChanged(qurl);
+    }
 }
 
 void QWebEnginePagePrivate::iconChanged(const QUrl &url)
@@ -258,13 +241,22 @@ void QWebEnginePagePrivate::didUpdateTargetURL(const QUrl &hoveredUrl)
 void QWebEnginePagePrivate::selectionChanged()
 {
     Q_Q(QWebEnginePage);
-    QTimer::singleShot(0, q, &QWebEnginePage::selectionChanged);
+    QTimer::singleShot(0, q, [this, q]() {
+        updateEditActions();
+        Q_EMIT q->selectionChanged();
+    });
 }
 
 void QWebEnginePagePrivate::recentlyAudibleChanged(bool recentlyAudible)
 {
     Q_Q(QWebEnginePage);
     Q_EMIT q->recentlyAudibleChanged(recentlyAudible);
+}
+
+void QWebEnginePagePrivate::renderProcessPidChanged(qint64 pid)
+{
+    Q_Q(QWebEnginePage);
+    Q_EMIT q->renderProcessPidChanged(pid);
 }
 
 QRectF QWebEnginePagePrivate::viewportRect() const
@@ -286,6 +278,7 @@ void QWebEnginePagePrivate::loadStarted(const QUrl &provisionalUrl, bool isError
         return;
 
     isLoading = true;
+    m_certificateErrorControllers.clear();
     QTimer::singleShot(0, q, &QWebEnginePage::loadStarted);
 }
 
@@ -305,8 +298,6 @@ void QWebEnginePagePrivate::loadFinished(bool success, const QUrl &url, bool isE
     }
 
     isLoading = false;
-    if (success)
-        explicitUrl = QUrl();
     // Delay notifying failure until the error-page is done loading.
     // Error-pages are not loaded on failures due to abort.
     if (success || errorCode == -3 /* ERR_ABORTED*/ || !settings->testAttribute(QWebEngineSettings::ErrorPageEnabled)) {
@@ -336,7 +327,10 @@ void QWebEnginePagePrivate::unhandledKeyEvent(QKeyEvent *event)
         QGuiApplication::sendEvent(view->parentWidget(), event);
 }
 
-void QWebEnginePagePrivate::adoptNewWindow(QSharedPointer<WebContentsAdapter> newWebContents, WindowOpenDisposition disposition, bool userGesture, const QRect &initialGeometry, const QUrl &targetUrl)
+QSharedPointer<WebContentsAdapter>
+QWebEnginePagePrivate::adoptNewWindow(QSharedPointer<WebContentsAdapter> newWebContents,
+                                      WindowOpenDisposition disposition, bool userGesture,
+                                      const QRect &initialGeometry, const QUrl &targetUrl)
 {
     Q_Q(QWebEnginePage);
     Q_UNUSED(userGesture);
@@ -344,27 +338,11 @@ void QWebEnginePagePrivate::adoptNewWindow(QSharedPointer<WebContentsAdapter> ne
 
     QWebEnginePage *newPage = q->createWindow(toWindowType(disposition));
     if (!newPage)
-        return;
+        return nullptr;
 
-    if (newPage->d_func() == this) {
-        // If createWindow returns /this/ we must delay the adoption.
-        Q_ASSERT(q == newPage);
-        // WebContents might be null if we just opened a new page for navigation, in that case
-        // avoid referencing newWebContents so that it is deleted and WebContentsDelegateQt::OpenURLFromTab
-        // will fall back to navigating current page.
-        if (newWebContents->webContents()) {
-            QTimer::singleShot(0, q, [this, newPage, newWebContents, initialGeometry] () {
-                adoptNewWindowImpl(newPage, newWebContents, initialGeometry);
-            });
-        }
-    } else {
-        adoptNewWindowImpl(newPage, newWebContents, initialGeometry);
-    }
-}
+    if (!newWebContents->webContents())
+        return newPage->d_func()->adapter; // Reuse existing adapter
 
-void QWebEnginePagePrivate::adoptNewWindowImpl(QWebEnginePage *newPage,
-        const QSharedPointer<WebContentsAdapter> &newWebContents, const QRect &initialGeometry)
-{
     // Mark the new page as being in the process of being adopted, so that a second mouse move event
     // sent by newWebContents->initialize() gets filtered in RenderWidgetHostViewQt::forwardEvent.
     // The first mouse move event is being sent by q->createWindow(). This is necessary because
@@ -382,6 +360,8 @@ void QWebEnginePagePrivate::adoptNewWindowImpl(QWebEnginePage *newPage,
 
     if (!initialGeometry.isEmpty())
         emit newPage->geometryChangeRequested(initialGeometry);
+
+    return newWebContents;
 }
 
 bool QWebEnginePagePrivate::isBeingAdopted()
@@ -413,11 +393,6 @@ void QWebEnginePagePrivate::didFetchDocumentMarkup(quint64 requestId, const QStr
 void QWebEnginePagePrivate::didFetchDocumentInnerText(quint64 requestId, const QString& result)
 {
     m_callbacks.invoke(requestId, result);
-}
-
-void QWebEnginePagePrivate::didFindText(quint64 requestId, int matchCount)
-{
-    m_callbacks.invoke(requestId, matchCount > 0);
 }
 
 void QWebEnginePagePrivate::didPrintPage(quint64 requestId, QSharedPointer<QByteArray> result)
@@ -527,10 +502,24 @@ void QWebEnginePagePrivate::runMediaAccessPermissionRequest(const QUrl &security
     Q_EMIT q->featurePermissionRequested(securityOrigin, feature);
 }
 
-void QWebEnginePagePrivate::runGeolocationPermissionRequest(const QUrl &securityOrigin)
+static QWebEnginePage::Feature toFeature(QtWebEngineCore::ProfileAdapter::PermissionType type)
+{
+    switch (type) {
+    case QtWebEngineCore::ProfileAdapter::NotificationPermission:
+        return QWebEnginePage::Notifications;
+    case QtWebEngineCore::ProfileAdapter::GeolocationPermission:
+        return QWebEnginePage::Geolocation;
+    default:
+        break;
+    }
+    Q_UNREACHABLE();
+    return QWebEnginePage::Feature(-1);
+}
+
+void QWebEnginePagePrivate::runFeaturePermissionRequest(QtWebEngineCore::ProfileAdapter::PermissionType permission, const QUrl &securityOrigin)
 {
     Q_Q(QWebEnginePage);
-    Q_EMIT q->featurePermissionRequested(securityOrigin, QWebEnginePage::Geolocation);
+    Q_EMIT q->featurePermissionRequested(securityOrigin, toFeature(permission));
 }
 
 void QWebEnginePagePrivate::runMouseLockPermissionRequest(const QUrl &securityOrigin)
@@ -551,12 +540,6 @@ void QWebEnginePagePrivate::runRegisterProtocolHandlerRequest(QWebEngineRegister
     Q_EMIT q->registerProtocolHandlerRequested(request);
 }
 
-void QWebEnginePagePrivate::runUserNotificationPermissionRequest(const QUrl &securityOrigin)
-{
-    Q_Q(QWebEnginePage);
-    Q_EMIT q->featurePermissionRequested(securityOrigin, QWebEnginePage::Notifications);
-}
-
 QObject *QWebEnginePagePrivate::accessibilityParentObject()
 {
     return view;
@@ -575,10 +558,10 @@ void QWebEnginePagePrivate::updateAction(QWebEnginePage::WebAction action) const
 
     switch (action) {
     case QWebEnginePage::Back:
-        enabled = adapter->canGoBack();
+        enabled = adapter->canGoToOffset(-1);
         break;
     case QWebEnginePage::Forward:
-        enabled = adapter->canGoForward();
+        enabled = adapter->canGoToOffset(1);
         break;
     case QWebEnginePage::Stop:
         enabled = isLoading;
@@ -592,12 +575,14 @@ void QWebEnginePagePrivate::updateAction(QWebEnginePage::WebAction action) const
         break;
     case QWebEnginePage::Cut:
     case QWebEnginePage::Copy:
+    case QWebEnginePage::Unselect:
+        enabled = adapter->hasFocusedFrame() && !adapter->selectedText().isEmpty();
+        break;
     case QWebEnginePage::Paste:
     case QWebEnginePage::Undo:
     case QWebEnginePage::Redo:
     case QWebEnginePage::SelectAll:
     case QWebEnginePage::PasteAndMatchStyle:
-    case QWebEnginePage::Unselect:
         enabled = adapter->hasFocusedFrame();
         break;
     default:
@@ -649,8 +634,6 @@ void QWebEnginePagePrivate::recreateFromSerializedHistory(QDataStream &input)
         adapter = std::move(newWebContents);
         adapter->setClient(this);
         adapter->loadDefault();
-        if (view && view->isVisible())
-            wasShown();
     }
 }
 
@@ -695,6 +678,12 @@ void QWebEnginePagePrivate::widgetChanged(RenderWidgetHostViewQtDelegate *newWid
 {
     Q_Q(QWebEnginePage);
     bindPageAndWidget(q, static_cast<RenderWidgetHostViewQtDelegateWidget *>(newWidgetBase));
+}
+
+void QWebEnginePagePrivate::findTextFinished(const QWebEngineFindTextResult &result)
+{
+    Q_Q(QWebEnginePage);
+    Q_EMIT q->findTextFinished(result);
 }
 
 void QWebEnginePagePrivate::ensureInitialized() const
@@ -795,6 +784,16 @@ QWebEnginePage::QWebEnginePage(QObject* parent)
     d->q_ptr = this;
     d->adapter->setClient(d);
 }
+
+/*!
+    \fn void QWebEnginePage::findTextFinished(const QWebEngineFindTextResult &result)
+    \since 5.14
+
+    This signal is emitted when a search string search on a page is completed. \a result is
+    the result of the string search.
+
+    \sa findText()
+*/
 
 /*!
     \fn void QWebEnginePage::printRequested()
@@ -917,6 +916,13 @@ QWebEnginePage::QWebEnginePage(QObject* parent)
 */
 
 /*!
+  \fn void QWebEnginePage::renderProcessPidChanged(qint64 pid);
+  \since 5.15
+
+  This signal is emitted when the underlying render process PID, \a renderProcessPid, changes.
+*/
+
+/*!
     \fn void QWebEnginePage::iconUrlChanged(const QUrl &url)
 
     This signal is emitted when the URL of the icon ("favicon") associated with the
@@ -958,7 +964,6 @@ QWebEnginePage::~QWebEnginePage()
     if (d_ptr) {
         // d_ptr might be exceptionally null if profile adapter got deleted first
         setDevToolsPage(nullptr);
-        d_ptr->adapter->stopFinding();
         QWebEnginePagePrivate::bindPageAndView(this, nullptr);
         QWebEnginePagePrivate::bindPageAndWidget(this, nullptr);
     }
@@ -1110,9 +1115,11 @@ bool QWebEnginePage::isAudioMuted() const {
 
 void QWebEnginePage::setAudioMuted(bool muted) {
     Q_D(QWebEnginePage);
+    bool wasAudioMuted = isAudioMuted();
     d->defaultAudioMuted = muted;
-    if (d->adapter->isInitialized())
-        d->adapter->setAudioMuted(muted);
+    d->adapter->setAudioMuted(muted);
+    if (wasAudioMuted != isAudioMuted())
+        Q_EMIT audioMutedChanged(muted);
 }
 
 /*!
@@ -1128,6 +1135,20 @@ bool QWebEnginePage::recentlyAudible() const
 {
     Q_D(const QWebEnginePage);
     return d->adapter->isInitialized() && d->adapter->recentlyAudible();
+}
+
+/*!
+  \property QWebEnginePage::renderProcessPid
+  \brief The process ID (PID) of the render process assigned to the current
+  page's main frame.
+  \since 5.15
+
+  If no render process is available yet, \c 0 is returned.
+*/
+qint64 QWebEnginePage::renderProcessPid() const
+{
+    Q_D(const QWebEnginePage);
+    return d->adapter->renderProcessPid();
 }
 
 void QWebEnginePage::setView(QWidget *newViewBase)
@@ -1342,10 +1363,10 @@ void QWebEnginePage::triggerAction(WebAction action, bool)
     const QtWebEngineCore::WebEngineContextMenuData *menuData = d->contextData.d;
     switch (action) {
     case Back:
-        d->adapter->navigateToOffset(-1);
+        d->adapter->navigateBack();
         break;
     case Forward:
-        d->adapter->navigateToOffset(1);
+        d->adapter->navigateForward();
         break;
     case Stop:
         d->adapter->stop();
@@ -1408,10 +1429,14 @@ void QWebEnginePage::triggerAction(WebAction action, bool)
     case CopyLinkToClipboard:
         if (menuData && !menuData->unfilteredLinkUrl().isEmpty()) {
             QString urlString = menuData->unfilteredLinkUrl().toString(QUrl::FullyEncoded);
-            QString title = menuData->linkText().toHtmlEscaped();
+            QString linkText = menuData->linkText().toHtmlEscaped();
+            QString title = menuData->titleText();
+            if (!title.isEmpty())
+                title = QStringLiteral(" title=\"%1\"").arg(title.toHtmlEscaped());
             QMimeData *data = new QMimeData();
             data->setText(urlString);
-            QString html = QStringLiteral("<a href=\"") + urlString + QStringLiteral("\">") + title + QStringLiteral("</a>");
+            QString html = QStringLiteral("<a href=\"") + urlString + QStringLiteral("\"") + title + QStringLiteral(">")
+                         + linkText + QStringLiteral("</a>");
             data->setHtml(html);
             data->setUrls(QList<QUrl>() << menuData->unfilteredLinkUrl());
             qApp->clipboard()->setMimeData(data);
@@ -1434,12 +1459,15 @@ void QWebEnginePage::triggerAction(WebAction action, bool)
     case CopyImageUrlToClipboard:
         if (menuData && menuData->mediaUrl().isValid() && menuData->mediaType() == WebEngineContextMenuData::MediaTypeImage) {
             QString urlString = menuData->mediaUrl().toString(QUrl::FullyEncoded);
-            QString title = menuData->linkText();
+            QString alt = menuData->altText();
+            if (!alt.isEmpty())
+                alt = QStringLiteral(" alt=\"%1\"").arg(alt.toHtmlEscaped());
+            QString title = menuData->titleText();
             if (!title.isEmpty())
-                title = QStringLiteral(" alt=\"%1\"").arg(title.toHtmlEscaped());
+                title = QStringLiteral(" title=\"%1\"").arg(title.toHtmlEscaped());
             QMimeData *data = new QMimeData();
             data->setText(urlString);
-            QString html = QStringLiteral("<img src=\"") + urlString + QStringLiteral("\"") + title + QStringLiteral("></img>");
+            QString html = QStringLiteral("<img src=\"") + urlString + QStringLiteral("\"") + title + alt + QStringLiteral("></img>");
             data->setHtml(html);
             data->setUrls(QList<QUrl>() << menuData->mediaUrl());
             qApp->clipboard()->setMimeData(data);
@@ -1457,12 +1485,17 @@ void QWebEnginePage::triggerAction(WebAction action, bool)
                  menuData->mediaType() == WebEngineContextMenuData::MediaTypeVideo))
         {
             QString urlString = menuData->mediaUrl().toString(QUrl::FullyEncoded);
+            QString title = menuData->titleText();
+            if (!title.isEmpty())
+                title = QStringLiteral(" title=\"%1\"").arg(title.toHtmlEscaped());
             QMimeData *data = new QMimeData();
             data->setText(urlString);
             if (menuData->mediaType() == WebEngineContextMenuData::MediaTypeAudio)
-                data->setHtml(QStringLiteral("<audio src=\"") + urlString + QStringLiteral("\"></audio>"));
+                data->setHtml(QStringLiteral("<audio src=\"") + urlString + QStringLiteral("\"") + title +
+                              QStringLiteral("></audio>"));
             else
-                data->setHtml(QStringLiteral("<video src=\"") + urlString + QStringLiteral("\"></video>"));
+                data->setHtml(QStringLiteral("<video src=\"") + urlString + QStringLiteral("\"") + title +
+                              QStringLiteral("></video>"));
             data->setUrls(QList<QUrl>() << menuData->mediaUrl());
             qApp->clipboard()->setMimeData(data);
         }
@@ -1587,16 +1620,11 @@ void QWebEnginePage::findText(const QString &subString, FindFlags options, const
 {
     Q_D(QWebEnginePage);
     if (!d->adapter->isInitialized()) {
-        d->m_callbacks.invokeEmpty(resultCallback);
+        QtWebEngineCore::CallbackDirectory().invokeEmpty(resultCallback);
         return;
     }
-    if (subString.isEmpty()) {
-        d->adapter->stopFinding();
-        d->m_callbacks.invokeEmpty(resultCallback);
-    } else {
-        quint64 requestId = d->adapter->findText(subString, options & FindCaseSensitively, options & FindBackward);
-        d->m_callbacks.registerCallback(requestId, resultCallback);
-    }
+
+    d->adapter->findTextHelper()->startFinding(subString, options & FindCaseSensitively, options & FindBackward, resultCallback);
 }
 
 /*!
@@ -1605,31 +1633,6 @@ void QWebEnginePage::findText(const QString &subString, FindFlags options, const
 bool QWebEnginePage::event(QEvent *e)
 {
     return QObject::event(e);
-}
-
-void QWebEnginePagePrivate::wasShown()
-{
-    if (!adapter->isInitialized()) {
-        // On the one hand, it is too early to initialize here. The application
-        // may call show() before load(), or it may call show() from
-        // createWindow(), and then we would create an unnecessary blank
-        // WebContents here. On the other hand, if the application calls show()
-        // then it expects something to be shown, so we have to initialize.
-        // Therefore we have to delay the initialization via the event loop.
-        wasShownTimer.start();
-        return;
-    }
-    adapter->wasShown();
-}
-
-void QWebEnginePagePrivate::wasHidden()
-{
-    if (!adapter->isInitialized()) {
-        // Cancel timer from wasShown() above.
-        wasShownTimer.stop();
-        return;
-    }
-    adapter->wasHidden();
 }
 
 void QWebEnginePagePrivate::contextMenuRequested(const WebEngineContextMenuData &data)
@@ -1672,8 +1675,8 @@ void QWebEnginePagePrivate::navigationRequested(int navigationType, const QUrl &
 {
     Q_Q(QWebEnginePage);
     bool accepted = q->acceptNavigationRequest(url, static_cast<QWebEnginePage::NavigationType>(navigationType), isMainFrame);
-    if (accepted && adapter->isFindTextInProgress())
-        adapter->stopFinding();
+    if (accepted && adapter->findTextHelper()->isFindTextInProgress())
+        adapter->findTextHelper()->stopFinding();
     navigationRequestAction = accepted ? WebContentsAdapterClient::AcceptRequest : WebContentsAdapterClient::IgnoreRequest;
 }
 
@@ -1727,11 +1730,12 @@ void QWebEnginePagePrivate::allowCertificateError(const QSharedPointer<Certifica
     Q_Q(QWebEnginePage);
     bool accepted = false;
 
-    QWebEngineCertificateError error(controller->error(), controller->url(), controller->overridable() && !controller->strictEnforcement(), controller->errorString());
+    QWebEngineCertificateError error(controller);
     accepted = q->certificateError(error);
-
-    if (error.isOverridable())
-        controller->accept(accepted);
+    if (error.deferred() && !error.answered())
+        m_certificateErrorControllers.append(controller);
+    else if (!error.answered())
+        controller->accept(error.isOverridable() && accepted);
 }
 
 void QWebEnginePagePrivate::selectClientCert(const QSharedPointer<ClientCertSelectController> &controller)
@@ -1842,38 +1846,44 @@ void QWebEnginePagePrivate::printRequested()
     });
 }
 
+void QWebEnginePagePrivate::lifecycleStateChanged(LifecycleState state)
+{
+    Q_Q(QWebEnginePage);
+    Q_EMIT q->lifecycleStateChanged(static_cast<QWebEnginePage::LifecycleState>(state));
+}
+
+void QWebEnginePagePrivate::recommendedStateChanged(LifecycleState state)
+{
+    Q_Q(QWebEnginePage);
+    QTimer::singleShot(0, q, [q, state]() {
+        Q_EMIT q->recommendedStateChanged(static_cast<QWebEnginePage::LifecycleState>(state));
+    });
+}
+
+void QWebEnginePagePrivate::visibleChanged(bool visible)
+{
+    Q_Q(QWebEnginePage);
+    Q_EMIT q->visibleChanged(visible);
+}
+
 /*!
     \since 5.13
 
     Registers the request interceptor \a interceptor to intercept URL requests.
 
     The page does not take ownership of the pointer. This interceptor is called
-    after any interceptors on the profile, and unlike profile interceptors, is run
-    on the UI thread, making it thread-safer. Only URL requests from this page are
-    intercepted.
+    after any interceptors on the profile, and unlike profile interceptors, only
+    URL requests from this page are intercepted.
 
     To unset the request interceptor, set a \c nullptr.
 
-    \sa QWebEngineUrlRequestInfo, QWebEngineProfile::setRequestInterceptor()
+    \sa QWebEngineUrlRequestInfo, QWebEngineProfile::setUrlRequestInterceptor()
 */
 
 void QWebEnginePage::setUrlRequestInterceptor(QWebEngineUrlRequestInterceptor *interceptor)
 {
     Q_D(QWebEnginePage);
-    bool hadInterceptorChanged = bool(d->requestInterceptor) != bool(interceptor);
-    d->requestInterceptor = interceptor;
-    if (hadInterceptorChanged) {
-        if (interceptor)
-            d->profile->d_ptr->profileAdapter()->addPageRequestInterceptor();
-        else
-            d->profile->d_ptr->profileAdapter()->removePageRequestInterceptor();
-    }
-}
-
-void QWebEnginePagePrivate::interceptRequest(QWebEngineUrlRequestInfo &info)
-{
-    if (requestInterceptor)
-        requestInterceptor->interceptRequest(info);
+    d->adapter->setRequestInterceptor(interceptor);
 }
 
 #if QT_CONFIG(menu)
@@ -1900,8 +1910,24 @@ QMenu *QWebEnginePage::createStandardContextMenu()
 void QWebEnginePage::setFeaturePermission(const QUrl &securityOrigin, QWebEnginePage::Feature feature, QWebEnginePage::PermissionPolicy policy)
 {
     Q_D(QWebEnginePage);
-    if (policy == PermissionUnknown)
+    if (policy == PermissionUnknown) {
+        switch (feature) {
+        case MediaAudioVideoCapture:
+        case MediaAudioCapture:
+        case MediaVideoCapture:
+        case DesktopAudioVideoCapture:
+        case DesktopVideoCapture:
+        case MouseLock:
+            break;
+        case Geolocation:
+            d->adapter->grantFeaturePermission(securityOrigin, ProfileAdapter::GeolocationPermission, ProfileAdapter::AskPermission);
+            break;
+        case Notifications:
+            d->adapter->grantFeaturePermission(securityOrigin, ProfileAdapter::NotificationPermission, ProfileAdapter::AskPermission);
+            break;
+        }
         return;
+    }
 
     const WebContentsAdapterClient::MediaRequestFlags audioVideoCaptureFlags(
         WebContentsAdapterClient::MediaVideoCapture |
@@ -1927,14 +1953,14 @@ void QWebEnginePage::setFeaturePermission(const QUrl &securityOrigin, QWebEngine
         case DesktopVideoCapture:
             d->adapter->grantMediaAccessPermission(securityOrigin, WebContentsAdapterClient::MediaDesktopVideoCapture);
             break;
-        case Geolocation:
-            d->adapter->runGeolocationRequestCallback(securityOrigin, true);
-            break;
         case MouseLock:
-            d->adapter->grantMouseLockPermission(true);
+            d->adapter->grantMouseLockPermission(securityOrigin, true);
+            break;
+        case Geolocation:
+            d->adapter->grantFeaturePermission(securityOrigin, ProfileAdapter::GeolocationPermission, ProfileAdapter::AllowedPermission);
             break;
         case Notifications:
-            d->adapter->runUserNotificationRequestCallback(securityOrigin, true);
+            d->adapter->grantFeaturePermission(securityOrigin, ProfileAdapter::NotificationPermission, ProfileAdapter::AllowedPermission);
             break;
         }
     } else { // if (policy == PermissionDeniedByUser)
@@ -1947,13 +1973,13 @@ void QWebEnginePage::setFeaturePermission(const QUrl &securityOrigin, QWebEngine
             d->adapter->grantMediaAccessPermission(securityOrigin, WebContentsAdapterClient::MediaNone);
             break;
         case Geolocation:
-            d->adapter->runGeolocationRequestCallback(securityOrigin, false);
+            d->adapter->grantFeaturePermission(securityOrigin, ProfileAdapter::GeolocationPermission, ProfileAdapter::DeniedPermission);
             break;
         case MouseLock:
-            d->adapter->grantMouseLockPermission(false);
+            d->adapter->grantMouseLockPermission(securityOrigin, false);
             break;
         case Notifications:
-            d->adapter->runUserNotificationRequestCallback(securityOrigin, false);
+            d->adapter->grantFeaturePermission(securityOrigin, ProfileAdapter::NotificationPermission, ProfileAdapter::DeniedPermission);
             break;
         }
     }
@@ -2056,14 +2082,17 @@ QString QWebEnginePage::title() const
 void QWebEnginePage::setUrl(const QUrl &url)
 {
     Q_D(QWebEnginePage);
-    d->explicitUrl = url;
+    if (d->url != url) {
+        d->url = url;
+        emit urlChanged(url);
+    }
     load(url);
 }
 
 QUrl QWebEnginePage::url() const
 {
     Q_D(const QWebEnginePage);
-    return d->explicitUrl.isValid() ? d->explicitUrl : d->adapter->activeUrl();
+    return d->url;
 }
 
 QUrl QWebEnginePage::requestedUrl() const
@@ -2127,6 +2156,10 @@ void QWebEnginePage::runJavaScript(const QString &scriptSource)
 {
     Q_D(QWebEnginePage);
     d->ensureInitialized();
+    if (d->adapter->lifecycleState() == WebContentsAdapter::LifecycleState::Discarded) {
+        qWarning("runJavaScript: disabled in Discarded state");
+        return;
+    }
     d->adapter->runJavaScript(scriptSource, QWebEngineScript::MainWorld);
 }
 
@@ -2134,6 +2167,11 @@ void QWebEnginePage::runJavaScript(const QString& scriptSource, const QWebEngine
 {
     Q_D(QWebEnginePage);
     d->ensureInitialized();
+    if (d->adapter->lifecycleState() == WebContentsAdapter::LifecycleState::Discarded) {
+        qWarning("runJavaScript: disabled in Discarded state");
+        d->m_callbacks.invokeEmpty(resultCallback);
+        return;
+    }
     quint64 requestId = d->adapter->runJavaScriptCallbackResult(scriptSource, QWebEngineScript::MainWorld);
     d->m_callbacks.registerCallback(requestId, resultCallback);
 }
@@ -2274,14 +2312,12 @@ ASSERT_ENUMS_MATCH(FilePickerController::OpenMultiple, QWebEnginePage::FileSelec
 QStringList QWebEnginePage::chooseFiles(FileSelectionMode mode, const QStringList &oldFiles, const QStringList &acceptedMimeTypes)
 {
 #if QT_CONFIG(filedialog)
-    // FIXME: Should we expose this in QWebPage's API ? Right now it is very open and can contain a mix and match of file extensions (which QFileDialog
-    // can work with) and mimetypes ranging from text/plain or images/* to application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
-    Q_UNUSED(acceptedMimeTypes);
+    const QStringList &filter = FilePickerController::nameFilters(acceptedMimeTypes);
     QStringList ret;
     QString str;
     switch (static_cast<FilePickerController::FileChooserMode>(mode)) {
     case FilePickerController::OpenMultiple:
-        ret = QFileDialog::getOpenFileNames(view(), QString());
+        ret = QFileDialog::getOpenFileNames(view(), QString(), QString(), filter.join(QStringLiteral(";;")), nullptr, QFileDialog::HideNameFilterDetails);
         break;
     // Chromium extension, not exposed as part of the public API for now.
     case FilePickerController::UploadFolder:
@@ -2295,7 +2331,7 @@ QStringList QWebEnginePage::chooseFiles(FileSelectionMode mode, const QStringLis
             ret << str;
         break;
     case FilePickerController::Open:
-        str = QFileDialog::getOpenFileName(view(), QString(), oldFiles.first());
+        str = QFileDialog::getOpenFileName(view(), QString(), oldFiles.first(), filter.join(QStringLiteral(";;")), nullptr, QFileDialog::HideNameFilterDetails);
         if (!str.isNull())
             ret << str;
         break;
@@ -2314,7 +2350,9 @@ void QWebEnginePage::javaScriptAlert(const QUrl &securityOrigin, const QString &
 {
     Q_UNUSED(securityOrigin);
 #if QT_CONFIG(messagebox)
-    QMessageBox::information(view(), QStringLiteral("Javascript Alert - %1").arg(url().toString()), msg);
+    QMessageBox::information(view(),
+                             QStringLiteral("Javascript Alert - %1").arg(url().toString()),
+                             msg.toHtmlEscaped());
 #else
     Q_UNUSED(msg);
 #endif // QT_CONFIG(messagebox)
@@ -2324,7 +2362,11 @@ bool QWebEnginePage::javaScriptConfirm(const QUrl &securityOrigin, const QString
 {
     Q_UNUSED(securityOrigin);
 #if QT_CONFIG(messagebox)
-    return (QMessageBox::information(view(), QStringLiteral("Javascript Confirm - %1").arg(url().toString()), msg, QMessageBox::Ok, QMessageBox::Cancel) == QMessageBox::Ok);
+    return (QMessageBox::information(view(),
+                                     QStringLiteral("Javascript Confirm - %1").arg(url().toString()),
+                                     msg.toHtmlEscaped(),
+                                     QMessageBox::Ok,
+                                     QMessageBox::Cancel) == QMessageBox::Ok);
 #else
     Q_UNUSED(msg);
     return false;
@@ -2337,7 +2379,12 @@ bool QWebEnginePage::javaScriptPrompt(const QUrl &securityOrigin, const QString 
 #if QT_CONFIG(inputdialog)
     bool ret = false;
     if (result)
-        *result = QInputDialog::getText(view(), QStringLiteral("Javascript Prompt - %1").arg(url().toString()), msg, QLineEdit::Normal, defaultValue, &ret);
+        *result = QInputDialog::getText(view(),
+                                        QStringLiteral("Javascript Prompt - %1").arg(url().toString()),
+                                        msg.toHtmlEscaped(),
+                                        QLineEdit::Normal,
+                                        defaultValue.toHtmlEscaped(),
+                                        &ret);
     return ret;
 #else
     Q_UNUSED(msg);
@@ -2512,6 +2559,120 @@ const QWebEngineContextMenuData &QWebEnginePage::contextMenuData() const
     return d->contextData;
 }
 
+/*!
+  \enum QWebEnginePage::LifecycleState
+  \since 5.14
+
+  This enum describes the lifecycle state of the page:
+
+  \value  Active
+  Normal state.
+  \value  Frozen
+  Low CPU usage state where most HTML task sources are suspended.
+  \value  Discarded
+  Very low resource usage state where the entire browsing context is discarded.
+
+  \sa lifecycleState, {Page Lifecycle API}, {WebEngine Lifecycle Example}
+*/
+
+/*!
+  \property QWebEnginePage::lifecycleState
+  \since 5.14
+
+  \brief The current lifecycle state of the page.
+
+  The following restrictions are enforced by the setter:
+
+  \list
+  \li A \l{visible} page must remain in the \c{Active} state.
+  \li If the page is being inspected by a \l{devToolsPage} then both pages must
+      remain in the \c{Active} states.
+  \li A page in the \c{Discarded} state can only transition to the \c{Active}
+      state. This will cause a reload of the page.
+  \endlist
+
+  These are the only hard limits on the lifecycle state, but see also
+  \l{recommendedState} for the recommended soft limits.
+
+  \sa recommendedState, {Page Lifecycle API}, {WebEngine Lifecycle Example}
+*/
+
+QWebEnginePage::LifecycleState QWebEnginePage::lifecycleState() const
+{
+    Q_D(const QWebEnginePage);
+    return static_cast<LifecycleState>(d->adapter->lifecycleState());
+}
+
+void QWebEnginePage::setLifecycleState(LifecycleState state)
+{
+    Q_D(QWebEnginePage);
+    d->adapter->setLifecycleState(static_cast<WebContentsAdapterClient::LifecycleState>(state));
+}
+
+/*!
+  \property QWebEnginePage::recommendedState
+  \since 5.14
+
+  \brief The recommended limit for the lifecycle state of the page.
+
+  Setting the lifecycle state to a lower resource usage state than the
+  recommended state may cause side-effects such as stopping background audio
+  playback or loss of HTML form input. Setting the lifecycle state to a higher
+  resource state is however completely safe.
+
+  \sa lifecycleState, {Page Lifecycle API}, {WebEngine Lifecycle Example}
+*/
+
+QWebEnginePage::LifecycleState QWebEnginePage::recommendedState() const
+{
+    Q_D(const QWebEnginePage);
+    return static_cast<LifecycleState>(d->adapter->recommendedState());
+}
+
+/*!
+  \property QWebEnginePage::visible
+  \since 5.14
+
+  \brief Whether the page is considered visible in the Page Visibility API.
+
+  Setting this property changes the \c{Document.hidden} and the
+  \c{Document.visibilityState} properties in JavaScript which web sites can use
+  to voluntarily reduce their resource usage if they are not visible to the
+  user.
+
+  If the page is connected to a \l{view} then this property will be managed
+  automatically by the view according to it's own visibility.
+
+  \sa lifecycleState
+*/
+
+bool QWebEnginePage::isVisible() const
+{
+    Q_D(const QWebEnginePage);
+    return d->adapter->isVisible();
+}
+
+void QWebEnginePage::setVisible(bool visible)
+{
+    Q_D(QWebEnginePage);
+
+    if (!d->adapter->isInitialized()) {
+        // On the one hand, it is too early to initialize here. The application
+        // may call show() before load(), or it may call show() from
+        // createWindow(), and then we would create an unnecessary blank
+        // WebContents here. On the other hand, if the application calls show()
+        // then it expects something to be shown, so we have to initialize.
+        // Therefore we have to delay the initialization via the event loop.
+        if (visible)
+            d->wasShownTimer.start();
+        else
+            d->wasShownTimer.stop();
+        return;
+    }
+
+    d->adapter->setVisible(visible);
+}
+
 #if QT_CONFIG(action)
 QContextMenuBuilder::QContextMenuBuilder(const QtWebEngineCore::WebEngineContextMenuData &data,
                                          QWebEnginePage *page,
@@ -2539,16 +2700,13 @@ void QContextMenuBuilder::addMenuItem(ContextMenuItem menuItem)
 
     switch (menuItem) {
     case ContextMenuItem::Back:
-        action = new QAction(QIcon::fromTheme(QStringLiteral("go-previous")), QWebEnginePage::tr("&Back"), m_menu);
-        QObject::connect(action, &QAction::triggered, thisRef->d_ptr->view, &QWebEngineView::back);
+        action = thisRef->action(QWebEnginePage::Back);
         break;
     case ContextMenuItem::Forward:
-        action = new QAction(QIcon::fromTheme(QStringLiteral("go-next")), QWebEnginePage::tr("&Forward"), m_menu);
-        QObject::connect(action, &QAction::triggered, thisRef->d_ptr->view, &QWebEngineView::forward);
+        action = thisRef->action(QWebEnginePage::Forward);
         break;
     case ContextMenuItem::Reload:
-        action = new QAction(QIcon::fromTheme(QStringLiteral("view-refresh")), QWebEnginePage::tr("&Reload"), m_menu);
-        QObject::connect(action, &QAction::triggered, thisRef->d_ptr->view, &QWebEngineView::reload);
+        action = thisRef->action(QWebEnginePage::Reload);
         break;
     case ContextMenuItem::Cut:
         action = thisRef->action(QWebEnginePage::Cut);

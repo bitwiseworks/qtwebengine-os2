@@ -28,6 +28,7 @@
 
 #include "testhandler.h"
 #include "server.h"
+#include "util.h"
 #include <QtWebEngine/private/qquickwebenginedialogrequests_p.h>
 #include <QtWebEngine/private/qquickwebenginecontextmenurequest_p.h>
 #include <QQuickWebEngineProfile>
@@ -42,6 +43,7 @@ class tst_Dialogs : public QObject {
     Q_OBJECT
 public:
     tst_Dialogs(){}
+
 
 private slots:
     void initTestCase();
@@ -64,7 +66,6 @@ private:
 
 void tst_Dialogs::initTestCase()
 {
-    QtWebEngine::initialize();
     QQuickWebEngineProfile::defaultProfile()->setOffTheRecord(true);
     qmlRegisterType<TestHandler>("io.qt.tester", 1, 0, "TestHandler");
     m_engine.reset(new QQmlApplicationEngine());
@@ -229,6 +230,7 @@ void tst_Dialogs::javaScriptDialogRequested()
     QTRY_VERIFY(m_listner->ready()); // make sure javascript executes no longer
 }
 
+static QByteArrayList params;
+W_QTEST_MAIN(tst_Dialogs, params)
 #include "tst_dialogs.moc"
-QTEST_MAIN(tst_Dialogs)
 

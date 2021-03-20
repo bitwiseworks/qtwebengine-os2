@@ -45,7 +45,6 @@
 #include "content_settings_observer_qt.h"
 
 #include "content/public/renderer/render_frame.h"
-#include "third_party/blink/public/platform/web_content_setting_callbacks.h"
 #include "third_party/blink/public/platform/web_security_origin.h"
 #include "third_party/blink/public/web/web_plugin_document.h"
 #include "third_party/blink/public/web/web_local_frame.h"
@@ -53,7 +52,6 @@
 
 #include "common/qt_messages.h"
 
-using blink::WebContentSettingCallbacks;
 using blink::WebSecurityOrigin;
 using blink::WebString;
 
@@ -61,44 +59,41 @@ namespace {
 
 bool IsUniqueFrame(blink::WebFrame *frame)
 {
-    return frame->GetSecurityOrigin().IsUnique() ||
-           frame->Top()->GetSecurityOrigin().IsUnique();
+    return frame->GetSecurityOrigin().IsOpaque() ||
+           frame->Top()->GetSecurityOrigin().IsOpaque();
 }
 
-}  // namespace
+} // namespace
 
 namespace QtWebEngineCore {
 
 ContentSettingsObserverQt::ContentSettingsObserverQt(content::RenderFrame *render_frame)
-        : content::RenderFrameObserver(render_frame)
-        , content::RenderFrameObserverTracker<ContentSettingsObserverQt>(render_frame)
-        , m_currentRequestId(0)
+    : content::RenderFrameObserver(render_frame)
+    , content::RenderFrameObserverTracker<ContentSettingsObserverQt>(render_frame)
+    , m_currentRequestId(0)
 {
     ClearBlockedContentSettings();
     render_frame->GetWebFrame()->SetContentSettingsClient(this);
 }
 
-ContentSettingsObserverQt::~ContentSettingsObserverQt() {
-}
+ContentSettingsObserverQt::~ContentSettingsObserverQt() {}
 
-bool ContentSettingsObserverQt::OnMessageReceived(const IPC::Message& message)
+bool ContentSettingsObserverQt::OnMessageReceived(const IPC::Message &message)
 {
     bool handled = true;
     IPC_BEGIN_MESSAGE_MAP(ContentSettingsObserverQt, message)
-        IPC_MESSAGE_HANDLER(QtWebEngineMsg_RequestFileSystemAccessAsyncResponse,
-                            OnRequestFileSystemAccessAsyncResponse)
-    IPC_MESSAGE_UNHANDLED(handled = false)
+        IPC_MESSAGE_HANDLER(QtWebEngineMsg_RequestFileSystemAccessAsyncResponse, OnRequestFileSystemAccessAsyncResponse)
+        IPC_MESSAGE_UNHANDLED(handled = false)
     IPC_END_MESSAGE_MAP()
 
     return handled;
 }
 
-void ContentSettingsObserverQt::DidCommitProvisionalLoad(bool is_same_document_navigation,
-                                                         ui::PageTransition /*transition*/)
+void ContentSettingsObserverQt::DidCommitProvisionalLoad(bool is_same_document_navigation, ui::PageTransition /*transition*/)
 {
-    blink::WebLocalFrame* frame = render_frame()->GetWebFrame();
+    blink::WebLocalFrame *frame = render_frame()->GetWebFrame();
     if (frame->Parent())
-        return;  // Not a top-level navigation.
+        return; // Not a top-level navigation.
 
     if (!is_same_document_navigation)
         ClearBlockedContentSettings();
@@ -106,8 +101,7 @@ void ContentSettingsObserverQt::DidCommitProvisionalLoad(bool is_same_document_n
     GURL url = frame->GetDocument().Url();
     // If we start failing this DCHECK, please makes sure we don't regress
     // this bug: http://code.google.com/p/chromium/issues/detail?id=79304
-    DCHECK(frame->GetDocument().GetSecurityOrigin().ToString() == "null" ||
-           !url.SchemeIs(url::kDataScheme));
+    DCHECK(frame->GetDocument().GetSecurityOrigin().ToString() == "null" || !url.SchemeIs(url::kDataScheme));
 }
 
 void ContentSettingsObserverQt::OnDestruct()
@@ -115,53 +109,46 @@ void ContentSettingsObserverQt::OnDestruct()
     delete this;
 }
 
-bool ContentSettingsObserverQt::AllowDatabase(const WebString &name,
-                                              const WebString &display_name,
-                                              unsigned /*estimated_size*/)
+bool ContentSettingsObserverQt::AllowDatabase()
 {
     blink::WebFrame *frame = render_frame()->GetWebFrame();
     if (IsUniqueFrame(frame))
         return false;
 
     bool result = false;
-    Send(new QtWebEngineHostMsg_AllowDatabase(
-             routing_id(), url::Origin(frame->GetSecurityOrigin()).GetURL(),
-             url::Origin(frame->Top()->GetSecurityOrigin()).GetURL(), name.Utf16(),
-             display_name.Utf16(), &result));
+    Send(new QtWebEngineHostMsg_AllowDatabase(routing_id(), url::Origin(frame->GetSecurityOrigin()).GetURL(),
+                                              url::Origin(frame->Top()->GetSecurityOrigin()).GetURL(), &result));
     return result;
 }
 
-void ContentSettingsObserverQt::RequestFileSystemAccessAsync(const WebContentSettingCallbacks &callbacks)
+void ContentSettingsObserverQt::RequestFileSystemAccessAsync(base::OnceCallback<void(bool)> callback)
 {
     blink::WebFrame *frame = render_frame()->GetWebFrame();
     if (IsUniqueFrame(frame)) {
-        WebContentSettingCallbacks permissionCallbacks(callbacks);
-        permissionCallbacks.DoDeny();
+        std::move(callback).Run(false);
         return;
     }
     ++m_currentRequestId;
-    bool inserted = m_permissionRequests.insert(std::make_pair(m_currentRequestId, callbacks)).second;
+    bool inserted = m_permissionRequests.insert(std::make_pair(m_currentRequestId, std::move(callback))).second;
 
     // Verify there are no duplicate insertions.
     DCHECK(inserted);
 
-    Send(new QtWebEngineHostMsg_RequestFileSystemAccessAsync(
-             routing_id(), m_currentRequestId,
-             url::Origin(frame->GetSecurityOrigin()).GetURL(),
-             url::Origin(frame->Top()->GetSecurityOrigin()).GetURL()));
+    Send(new QtWebEngineHostMsg_RequestFileSystemAccessAsync(routing_id(), m_currentRequestId,
+                                                             url::Origin(frame->GetSecurityOrigin()).GetURL(),
+                                                             url::Origin(frame->Top()->GetSecurityOrigin()).GetURL()));
 }
 
-bool ContentSettingsObserverQt::AllowIndexedDB(const WebSecurityOrigin &origin)
+bool ContentSettingsObserverQt::AllowIndexedDB()
 {
     blink::WebFrame *frame = render_frame()->GetWebFrame();
     if (IsUniqueFrame(frame))
         return false;
 
     bool result = false;
-    Send(new QtWebEngineHostMsg_AllowIndexedDB(
-             routing_id(), url::Origin(origin).GetURL(),
-             url::Origin(frame->Top()->GetSecurityOrigin()).GetURL(),
-             &result));
+    Send(new QtWebEngineHostMsg_AllowIndexedDB(routing_id(),
+                                               url::Origin(frame->GetSecurityOrigin()).GetURL(),
+                                               url::Origin(frame->Top()->GetSecurityOrigin()).GetURL(), &result));
     return result;
 }
 
@@ -177,9 +164,8 @@ bool ContentSettingsObserverQt::AllowStorage(bool local)
         return permissions->second;
 
     bool result = false;
-    Send(new QtWebEngineHostMsg_AllowDOMStorage(
-             routing_id(), url::Origin(frame->GetSecurityOrigin()).GetURL(),
-             url::Origin(frame->Top()->GetSecurityOrigin()).GetURL(), local, &result));
+    Send(new QtWebEngineHostMsg_AllowDOMStorage(routing_id(), url::Origin(frame->GetSecurityOrigin()).GetURL(),
+                                                url::Origin(frame->Top()->GetSecurityOrigin()).GetURL(), local, &result));
     m_cachedStoragePermissions[key] = result;
     return result;
 }
@@ -190,14 +176,10 @@ void ContentSettingsObserverQt::OnRequestFileSystemAccessAsyncResponse(int reque
     if (it == m_permissionRequests.end())
         return;
 
-    WebContentSettingCallbacks callbacks = it->second;
+    base::OnceCallback<void(bool)> callback = std::move(it->second);
     m_permissionRequests.erase(it);
 
-    if (allowed) {
-        callbacks.DoAllow();
-        return;
-    }
-    callbacks.DoDeny();
+    std::move(callback).Run(allowed);
 }
 
 void ContentSettingsObserverQt::ClearBlockedContentSettings()

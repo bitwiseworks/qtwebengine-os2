@@ -46,6 +46,10 @@ private slots:
 
 void tst_ProxyPac::proxypac()
 {
+    const QString fromEnv = qEnvironmentVariable("QTWEBENGINE_CHROMIUM_FLAGS");
+    if (!fromEnv.contains("--proxy-pac-url"))
+        qFatal("--proxy-pac-url argument is not passed.");
+
     ProxyServer proxyServer1;
     proxyServer1.setPort(5551);
     proxyServer1.run();

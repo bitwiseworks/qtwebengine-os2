@@ -45,7 +45,7 @@
 
 #include "profile_adapter.h"
 
-#include <QHash>
+#include <map>
 
 namespace QtWebEngineCore {
 
@@ -54,10 +54,9 @@ class PermissionManagerQt : public content::PermissionControllerDelegate {
 public:
     PermissionManagerQt();
     ~PermissionManagerQt();
-    typedef ProfileAdapter::PermissionType PermissionType;
 
-    void permissionRequestReply(const QUrl &origin, PermissionType type, bool reply);
-    bool checkPermission(const QUrl &origin, PermissionType type);
+    void permissionRequestReply(const QUrl &origin, ProfileAdapter::PermissionType type, ProfileAdapter::PermissionState reply);
+    bool checkPermission(const QUrl &origin, ProfileAdapter::PermissionType type);
 
     // content::PermissionManager implementation:
     int RequestPermission(
@@ -65,7 +64,7 @@ public:
         content::RenderFrameHost* render_frame_host,
         const GURL& requesting_origin,
         bool user_gesture,
-        const base::Callback<void(blink::mojom::PermissionStatus)>& callback) override;
+        base::OnceCallback<void(blink::mojom::PermissionStatus)> callback) override;
 
     blink::mojom::PermissionStatus GetPermissionStatus(
         content::PermissionType permission,
@@ -87,32 +86,39 @@ public:
         content::RenderFrameHost* render_frame_host,
         const GURL& requesting_origin,
         bool user_gesture,
-        const base::Callback<void(
-            const std::vector<blink::mojom::PermissionStatus>&)>& callback) override;
+        base::OnceCallback<void(
+            const std::vector<blink::mojom::PermissionStatus>&)> callback) override;
 
     int SubscribePermissionStatusChange(
         content::PermissionType permission,
         content::RenderFrameHost* render_frame_host,
         const GURL& requesting_origin,
-        const base::Callback<void(blink::mojom::PermissionStatus)>& callback) override;
+        const base::RepeatingCallback<void(blink::mojom::PermissionStatus)> callback) override;
 
     void UnsubscribePermissionStatusChange(int subscription_id) override;
 
 private:
-    QHash<QPair<QUrl, PermissionType>, bool> m_permissions;
-    struct RequestOrSubscription {
-        PermissionType type;
+    QHash<QPair<QUrl, ProfileAdapter::PermissionType>, bool> m_permissions;
+    struct Request {
+        int id;
+        ProfileAdapter::PermissionType type;
         QUrl origin;
-        base::Callback<void(blink::mojom::PermissionStatus)> callback;
+        base::OnceCallback<void(blink::mojom::PermissionStatus)> callback;
     };
     struct MultiRequest {
+        int id;
         std::vector<content::PermissionType> types;
         QUrl origin;
-        base::Callback<void(const std::vector<blink::mojom::PermissionStatus>&)> callback;
+        base::OnceCallback<void(const std::vector<blink::mojom::PermissionStatus>&)> callback;
     };
-    QHash<int, RequestOrSubscription> m_requests;
-    QHash<int, RequestOrSubscription> m_subscribers;
-    QHash<int, MultiRequest> m_multiRequests;
+    struct Subscription {
+        ProfileAdapter::PermissionType type;
+        QUrl origin;
+        base::RepeatingCallback<void(blink::mojom::PermissionStatus)> callback;
+    };
+    std::vector<Request> m_requests;
+    std::vector<MultiRequest> m_multiRequests;
+    std::map<int, Subscription> m_subscribers;
     int m_requestIdCount;
     int m_subscriberIdCount;
 

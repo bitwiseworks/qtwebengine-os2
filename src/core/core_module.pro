@@ -1,69 +1,16 @@
 MODULE = webenginecore
 
 include(core_common.pri)
-# Needed to set a CFBundleIdentifier
-QMAKE_INFO_PLIST = Info_mac.plist
-
-linking_pri = $$OUT_PWD/$$getConfigDir()/$${TARGET}.pri
-
-!include($$linking_pri) {
-    error("Could not find the linking information that gn should have generated.")
-}
+include($${QTWEBENGINE_ROOT}/src/buildtools/config/linking.pri)
 
 api_library_name = qtwebenginecoreapi$$qtPlatformTargetSuffix()
 api_library_path = $$OUT_PWD/api/$$getConfigDir()
-
-# Do not precompile any headers. We are only interested in the linker step.
-PRECOMPILED_HEADER =
-
-isEmpty(NINJA_OBJECTS): error("Missing object files from QtWebEngineCore linking pri.")
-isEmpty(NINJA_LFLAGS): error("Missing linker flags from QtWebEngineCore linking pri")
-isEmpty(NINJA_ARCHIVES): error("Missing archive files from QtWebEngineCore linking pri")
-isEmpty(NINJA_LIBS): error("Missing library files from QtWebEngineCore linking pri")
-NINJA_OBJECTS = $$eval($$list($$NINJA_OBJECTS))
-# Do manual response file linking for macOS and Linux
-
-RSP_OBJECT_FILE = $$OUT_PWD/$$getConfigDir()/$${TARGET}_o.rsp
-for(object, NINJA_OBJECTS): RSP_O_CONTENT += $$object
-write_file($$RSP_OBJECT_FILE, RSP_O_CONTENT)
-RSP_ARCHIVE_FILE = $$OUT_PWD/$$getConfigDir()/$${TARGET}_a.rsp
-for(archive, NINJA_ARCHIVES): RSP_A_CONTENT += $$archive
-write_file($$RSP_ARCHIVE_FILE, RSP_A_CONTENT)
-macos:LIBS_PRIVATE += -Wl,-filelist,$$shell_quote($$RSP_OBJECT_FILE)
-linux:QMAKE_LFLAGS += @$${RSP_OBJECT_FILE}
-# QTBUG-58710 add main rsp file on windows
-win32:QMAKE_LFLAGS += @$${RSP_OBJECT_FILE}
-linux:QMAKE_LFLAGS += -Wl,--start-group @$${RSP_ARCHIVE_FILE} -Wl,--end-group
-else: LIBS_PRIVATE += $$NINJA_ARCHIVES
-LIBS_PRIVATE += $$NINJA_LIB_DIRS $$NINJA_LIBS
-# GN's LFLAGS doesn't always work across all the Linux configurations we support.
-# The Windows and macOS ones from GN does provide a few useful flags however
-
-unix:qtConfig(webengine-noexecstack): \
-    QMAKE_LFLAGS += -Wl,-z,noexecstack
-linux {
-    # add chromium flags
-    for(flag, NINJA_LFLAGS) {
-        # filter out some flags
-        !contains(flag, .*noexecstack$): \
-        !contains(flag, .*as-needed$): \
-        !contains(flag, ^-B.*): \
-        !contains(flag, ^-fuse-ld.*): \
-        QMAKE_LFLAGS += $$flag
-    }
-} else {
-    QMAKE_LFLAGS += $$NINJA_LFLAGS
-}
-
-POST_TARGETDEPS += $$NINJA_TARGETDEPS
-
-
 LIBS_PRIVATE += -L$$api_library_path
 CONFIG *= no_smart_library_merge
 osx {
     LIBS_PRIVATE += -Wl,-force_load,$${api_library_path}$${QMAKE_DIR_SEP}lib$${api_library_name}.a
 } else: win32 {
-    !isDeveloperBuild() {
+    !qtConfig(webengine-developer-build) {
         # Remove unused functions and data in debug non-developer builds, because the binaries will
         # be smaller in the shipped packages.
         QMAKE_LFLAGS += /OPT:REF
@@ -87,6 +34,9 @@ win32 {
     POST_TARGETDEPS += $${api_library_path}$${QMAKE_DIR_SEP}lib$${api_library_name}.a
 }
 
+# Needed to set a CFBundleIdentifier
+QMAKE_INFO_PLIST = Info_mac.plist
+
 # Using -Wl,-Bsymbolic-functions seems to confuse the dynamic linker
 # and doesn't let Chromium get access to libc symbols through dlsym.
 CONFIG -= bsymbolic_functions
@@ -107,7 +57,7 @@ resources.files = $$REPACK_DIR/qtwebengine_resources.pak \
 
 icu.files = $$OUT_PWD/$$getConfigDir()/icudtl.dat
 
-!debug_and_release|!build_all|CONFIG(release, debug|release) {
+!qtConfig(debug_and_release)|!qtConfig(build_all)|CONFIG(release, debug|release) {
     qtConfig(framework) {
         locales.version = Versions
         locales.path = Resources/qtwebengine_locales
@@ -146,7 +96,7 @@ icu.files = $$OUT_PWD/$$getConfigDir()/icudtl.dat
     }
 }
 
-!build_pass:debug_and_release {
+!build_pass:qtConfig(debug_and_release) {
     # Special GNU make target that ensures linking isn't done for both debug and release builds
     # at the same time.
     notParallel.target = .NOTPARALLEL

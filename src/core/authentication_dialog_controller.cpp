@@ -46,17 +46,16 @@
 
 namespace QtWebEngineCore {
 
-AuthenticationDialogControllerPrivate::AuthenticationDialogControllerPrivate(LoginDelegateQt *loginDelegate)
+AuthenticationDialogControllerPrivate::AuthenticationDialogControllerPrivate(base::WeakPtr<LoginDelegateQt> loginDelegate)
     : loginDelegate(loginDelegate)
 {
 }
 
 void AuthenticationDialogControllerPrivate::dialogFinished(bool accepted, const QString &user, const QString &password)
 {
-    base::PostTaskWithTraits(
-                FROM_HERE, {content::BrowserThread::IO},
-                base::BindOnce(&LoginDelegateQt::sendAuthToRequester,
-                               loginDelegate, accepted, user, password));
+    base::PostTask(FROM_HERE, {content::BrowserThread::UI},
+                   base::BindOnce(&LoginDelegateQt::sendAuthToRequester,
+                                  loginDelegate, accepted, user, password));
 }
 
 AuthenticationDialogController::AuthenticationDialogController(AuthenticationDialogControllerPrivate *dd)
@@ -71,22 +70,22 @@ AuthenticationDialogController::~AuthenticationDialogController()
 
 QUrl AuthenticationDialogController::url() const
 {
-    return d->loginDelegate->url();
+    return d->url;
 }
 
 QString AuthenticationDialogController::realm() const
 {
-    return d->loginDelegate->realm();
+    return d->realm;
 }
 
 QString AuthenticationDialogController::host() const
 {
-    return d->loginDelegate->host();
+    return d->host;
 }
 
 bool AuthenticationDialogController::isProxy() const
 {
-    return d->loginDelegate->isProxy();
+    return d->isProxy;
 }
 
 void AuthenticationDialogController::accept(const QString &user, const QString &password)

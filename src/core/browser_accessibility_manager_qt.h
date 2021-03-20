@@ -41,8 +41,11 @@
 #define BROWSER_ACCESSIBILITY_MANAGER_QT_H
 
 #include "content/browser/accessibility/browser_accessibility_manager.h"
-#ifndef QT_NO_ACCESSIBILITY
+
 #include <QtCore/qobject.h>
+#include <QtGui/qtgui-config.h>
+
+#if QT_CONFIG(accessibility)
 
 QT_BEGIN_NAMESPACE
 class QAccessibleInterface;
@@ -60,6 +63,8 @@ public:
     ~BrowserAccessibilityManagerQt() override;
     void FireBlinkEvent(ax::mojom::Event event_type,
                         BrowserAccessibility* node) override;
+    void FireGeneratedEvent(ui::AXEventGenerator::Event event_type,
+                            BrowserAccessibility* node) override;
 
     QAccessibleInterface *rootParentAccessible();
     bool isValid() const { return m_valid; }
@@ -72,5 +77,5 @@ private:
 
 }
 
-#endif // QT_NO_ACCESSIBILITY
+#endif // QT_CONFIG(accessibility)
 #endif

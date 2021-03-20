@@ -1,6 +1,6 @@
 /****************************************************************************
 **
-** Copyright (C) 2016 The Qt Company Ltd.
+** Copyright (C) 2019 The Qt Company Ltd.
 ** Contact: https://www.qt.io/licensing/
 **
 ** This file is part of the QtWebEngine module of the Qt Toolkit.
@@ -40,31 +40,9 @@
 #include "qwebengineurlrequestinfo.h"
 #include "qwebengineurlrequestinfo_p.h"
 
-#include "content/public/common/resource_type.h"
-
 #include "web_contents_adapter_client.h"
 
 QT_BEGIN_NAMESPACE
-
-ASSERT_ENUMS_MATCH(QWebEngineUrlRequestInfo::ResourceTypeMainFrame, content::RESOURCE_TYPE_MAIN_FRAME)
-ASSERT_ENUMS_MATCH(QWebEngineUrlRequestInfo::ResourceTypeSubFrame, content::RESOURCE_TYPE_SUB_FRAME)
-ASSERT_ENUMS_MATCH(QWebEngineUrlRequestInfo::ResourceTypeStylesheet, content::RESOURCE_TYPE_STYLESHEET)
-ASSERT_ENUMS_MATCH(QWebEngineUrlRequestInfo::ResourceTypeScript, content::RESOURCE_TYPE_SCRIPT)
-ASSERT_ENUMS_MATCH(QWebEngineUrlRequestInfo::ResourceTypeImage, content::RESOURCE_TYPE_IMAGE)
-ASSERT_ENUMS_MATCH(QWebEngineUrlRequestInfo::ResourceTypeFontResource, content::RESOURCE_TYPE_FONT_RESOURCE)
-ASSERT_ENUMS_MATCH(QWebEngineUrlRequestInfo::ResourceTypeSubResource, content::RESOURCE_TYPE_SUB_RESOURCE)
-ASSERT_ENUMS_MATCH(QWebEngineUrlRequestInfo::ResourceTypeObject, content::RESOURCE_TYPE_OBJECT)
-ASSERT_ENUMS_MATCH(QWebEngineUrlRequestInfo::ResourceTypeMedia, content::RESOURCE_TYPE_MEDIA)
-ASSERT_ENUMS_MATCH(QWebEngineUrlRequestInfo::ResourceTypeWorker, content::RESOURCE_TYPE_WORKER)
-ASSERT_ENUMS_MATCH(QWebEngineUrlRequestInfo::ResourceTypeSharedWorker, content::RESOURCE_TYPE_SHARED_WORKER)
-ASSERT_ENUMS_MATCH(QWebEngineUrlRequestInfo::ResourceTypePrefetch, content::RESOURCE_TYPE_PREFETCH)
-ASSERT_ENUMS_MATCH(QWebEngineUrlRequestInfo::ResourceTypeFavicon, content::RESOURCE_TYPE_FAVICON)
-ASSERT_ENUMS_MATCH(QWebEngineUrlRequestInfo::ResourceTypeXhr, content::RESOURCE_TYPE_XHR)
-ASSERT_ENUMS_MATCH(QWebEngineUrlRequestInfo::ResourceTypePing, content::RESOURCE_TYPE_PING)
-ASSERT_ENUMS_MATCH(QWebEngineUrlRequestInfo::ResourceTypeServiceWorker, content::RESOURCE_TYPE_SERVICE_WORKER)
-ASSERT_ENUMS_MATCH(QWebEngineUrlRequestInfo::ResourceTypeCspReport, content::RESOURCE_TYPE_CSP_REPORT)
-ASSERT_ENUMS_MATCH(QWebEngineUrlRequestInfo::ResourceTypePluginResource, content::RESOURCE_TYPE_PLUGIN_RESOURCE)
-ASSERT_ENUMS_MATCH(QWebEngineUrlRequestInfo::ResourceTypeLast, content::RESOURCE_TYPE_LAST_TYPE)
 
 ASSERT_ENUMS_MATCH(QtWebEngineCore::WebContentsAdapterClient::LinkNavigation, QWebEngineUrlRequestInfo::NavigationTypeLink)
 ASSERT_ENUMS_MATCH(QtWebEngineCore::WebContentsAdapterClient::TypedNavigation, QWebEngineUrlRequestInfo::NavigationTypeTyped)
@@ -74,6 +52,7 @@ ASSERT_ENUMS_MATCH(QtWebEngineCore::WebContentsAdapterClient::BackForwardNavigat
                    QWebEngineUrlRequestInfo::NavigationTypeBackForward)
 ASSERT_ENUMS_MATCH(QtWebEngineCore::WebContentsAdapterClient::ReloadNavigation, QWebEngineUrlRequestInfo::NavigationTypeReload)
 ASSERT_ENUMS_MATCH(QtWebEngineCore::WebContentsAdapterClient::OtherNavigation, QWebEngineUrlRequestInfo::NavigationTypeOther)
+ASSERT_ENUMS_MATCH(QtWebEngineCore::WebContentsAdapterClient::RedirectNavigation, QWebEngineUrlRequestInfo::NavigationTypeRedirect)
 
 /*!
     \class QWebEngineUrlRequestInfo
@@ -128,12 +107,15 @@ ASSERT_ENUMS_MATCH(QtWebEngineCore::WebContentsAdapterClient::OtherNavigation, Q
 
 QWebEngineUrlRequestInfoPrivate::QWebEngineUrlRequestInfoPrivate(QWebEngineUrlRequestInfo::ResourceType resource,
                                                                  QWebEngineUrlRequestInfo::NavigationType navigation,
-                                                                 const QUrl &u, const QUrl &fpu, const QByteArray &m)
+                                                                 const QUrl &u, const QUrl &fpu, const QUrl &i,
+                                                                 const QByteArray &m)
     : resourceType(resource)
     , navigationType(navigation)
     , shouldBlockRequest(false)
+    , shouldRedirectRequest(false)
     , url(u)
     , firstPartyUrl(fpu)
+    , initiator(i)
     , method(m)
     , changed(false)
 {}
@@ -141,7 +123,21 @@ QWebEngineUrlRequestInfoPrivate::QWebEngineUrlRequestInfoPrivate(QWebEngineUrlRe
 /*!
     \internal
 */
+QWebEngineUrlRequestInfo::QWebEngineUrlRequestInfo() {}
+
+/*!
+    \internal
+*/
 QWebEngineUrlRequestInfo::QWebEngineUrlRequestInfo(QWebEngineUrlRequestInfo &&p) : d_ptr(p.d_ptr.take()) {}
+
+/*!
+    \internal
+*/
+QWebEngineUrlRequestInfo &QWebEngineUrlRequestInfo::operator=(QWebEngineUrlRequestInfo &&p)
+{
+    d_ptr.reset(p.d_ptr.take());
+    return *this;
+}
 
 /*!
     \internal
@@ -182,7 +178,9 @@ QWebEngineUrlRequestInfo::QWebEngineUrlRequestInfo(QWebEngineUrlRequestInfoPriva
     \value ResourceTypeCspReport  A report of Content Security Policy (CSP)
            violations. CSP reports are in JSON format and they are delivered by
            HTTP POST requests to specified servers. (Added in Qt 5.7)
-   \value ResourceTypePluginResource  A resource requested by a plugin. (Added in Qt 5.7)
+    \value ResourceTypePluginResource  A resource requested by a plugin. (Added in Qt 5.7)
+    \value ResourceTypeNavigationPreloadMainFrame  A main-frame service worker navigation preload request. (Added in Qt 5.14)
+    \value ResourceTypeNavigationPreloadSubFrame  A sub-frame service worker navigation preload request. (Added in Qt 5.14)
     \value ResourceTypeUnknown  Unknown request type.
 
     \note For forward compatibility all values not matched should be treated as unknown,
@@ -210,6 +208,7 @@ QWebEngineUrlRequestInfo::ResourceType QWebEngineUrlRequestInfo::resourceType() 
     \value NavigationTypeFormSubmitted Navigation submits a form.
     \value NavigationTypeBackForward Navigation initiated by a history action.
     \value NavigationTypeReload Navigation initiated by refreshing the page.
+    \value NavigationTypeRedirect Navigation triggered automatically by page content or remote server. (Added in Qt 5.14)
     \value NavigationTypeOther None of the above.
 */
 
@@ -241,6 +240,18 @@ QUrl QWebEngineUrlRequestInfo::requestUrl() const
 QUrl QWebEngineUrlRequestInfo::firstPartyUrl() const
 {
     return d_ptr->firstPartyUrl;
+}
+
+/*!
+    Returns the origin URL of the document that initiated
+    the navigation of a frame to another frame.
+
+    \since 5.14
+ */
+
+QUrl QWebEngineUrlRequestInfo::initiator() const
+{
+    return d_ptr->initiator;
 }
 
 /*!
@@ -277,6 +288,7 @@ void QWebEngineUrlRequestInfo::redirect(const QUrl &url)
 {
     d_ptr->changed = true;
     d_ptr->url = url;
+    d_ptr->shouldRedirectRequest = true;
 }
 
 /*!

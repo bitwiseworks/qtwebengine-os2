@@ -44,19 +44,30 @@
 #include "base/base_switches.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
-#include "base/message_loop/message_loop_impl.h"
+#include "base/power_monitor/power_monitor.h"
+#include "base/power_monitor/power_monitor_device_source.h"
 #include "base/run_loop.h"
 #include "base/task/post_task.h"
+#include "base/task/sequence_manager/thread_controller_with_message_pump_impl.h"
+#include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/threading/thread_restrictions.h"
 #include "cc/base/switches.h"
+#include "chrome/common/chrome_switches.h"
+#include "content/gpu/gpu_child_thread.h"
+#include "content/browser/compositor/surface_utils.h"
+#include "content/browser/compositor/viz_process_transport_factory.h"
+#include "components/viz/host/host_frame_sink_manager.h"
 #if QT_CONFIG(webengine_printing_and_pdf)
 #include "chrome/browser/printing/print_job_manager.h"
 #include "components/printing/browser/features.h"
 #endif
+#include "components/discardable_memory/service/discardable_shared_memory_manager.h"
 #include "components/viz/common/features.h"
 #include "components/web_cache/browser/web_cache_manager.h"
+#include "content/app/service_manager_environment.h"
 #include "content/browser/devtools/devtools_http_handler.h"
 #include "content/browser/scheduler/browser_task_executor.h"
+#include "content/browser/startup_data_impl.h"
 #include "content/browser/startup_helper.h"
 #include "content/public/app/content_main.h"
 #include "content/public/app/content_main_runner.h"
@@ -70,16 +81,22 @@
 #include "content/public/common/content_paths.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/main_function_params.h"
+#include "content/public/common/network_service_util.h"
 #include "gpu/command_buffer/service/gpu_switches.h"
 #include "gpu/command_buffer/service/sync_point_manager.h"
-#include "gpu/ipc/host/gpu_switches.h"
 #include "media/audio/audio_manager.h"
+#include "media/base/media_switches.h"
 #include "mojo/core/embedder/embedder.h"
 #include "net/base/port_util.h"
 #include "ppapi/buildflags/buildflags.h"
+#include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/network_switches.h"
-#include "services/resource_coordinator/public/cpp/resource_coordinator_features.h"
+#include "services/network/public/mojom/network_context.mojom.h"
 #include "services/service_manager/sandbox/switches.h"
+#include "services/tracing/public/cpp/trace_startup.h"
+#include "services/tracing/public/cpp/tracing_features.h"
+#include "third_party/blink/public/common/features.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/events/event_switches.h"
 #include "ui/native_theme/native_theme_features.h"
 #include "ui/gl/gl_switches.h"
@@ -88,7 +105,11 @@
 #include "content/public/app/sandbox_helper_win.h"
 #endif // OS_WIN
 
-#ifndef QT_NO_ACCESSIBILITY
+#if defined(Q_OS_MACOS)
+#include "base/mac/foundation_util.h"
+#endif
+
+#if QT_CONFIG(accessibility)
 #include "accessibility_activation_observer.h"
 #endif
 #include "api/qwebengineurlscheme.h"
@@ -107,7 +128,7 @@
 #include <QGuiApplication>
 #include <QMutex>
 #include <QOffscreenSurface>
-#ifndef QT_NO_OPENGL
+#if QT_CONFIG(opengl)
 # include <QOpenGLContext>
 #endif
 #include <QQuickWindow>
@@ -120,7 +141,7 @@
 
 using namespace QtWebEngineCore;
 
-#ifndef QT_NO_OPENGL
+#if QT_CONFIG(opengl)
 QT_BEGIN_NAMESPACE
 Q_GUI_EXPORT QOpenGLContext *qt_gl_global_share_context();
 QT_END_NAMESPACE
@@ -128,7 +149,7 @@ QT_END_NAMESPACE
 
 namespace {
 
-#ifndef QT_NO_OPENGL
+#if QT_CONFIG(opengl)
 bool usingANGLE()
 {
 #if defined(Q_OS_WIN)
@@ -155,13 +176,13 @@ bool usingDefaultSGBackend()
     }
 
     if (device.isEmpty())
-        device = QString::fromLocal8Bit(qgetenv("QT_QUICK_BACKEND"));
+        device = qEnvironmentVariable("QT_QUICK_BACKEND");
     if (device.isEmpty())
-        device = QString::fromLocal8Bit(qgetenv("QMLSCENE_DEVICE"));
+        device = qEnvironmentVariable("QMLSCENE_DEVICE");
 
     return device.isEmpty();
 }
-#endif //QT_NO_OPENGL
+#endif // QT_CONFIG(opengl)
 #if QT_CONFIG(webengine_pepper_plugins)
 void dummyGetPluginCallback(const std::vector<content::WebPluginInfo>&)
 {
@@ -172,13 +193,25 @@ void dummyGetPluginCallback(const std::vector<content::WebPluginInfo>&)
 
 namespace QtWebEngineCore {
 
+#if defined(Q_OS_WIN)
+sandbox::SandboxInterfaceInfo *staticSandboxInterfaceInfo(sandbox::SandboxInterfaceInfo *info)
+{
+    static sandbox::SandboxInterfaceInfo *g_info = nullptr;
+    if (info) {
+        Q_ASSERT(g_info == nullptr);
+        g_info = info;
+    }
+    return g_info;
+}
+#endif
+
 extern std::unique_ptr<base::MessagePump> messagePumpFactory();
 
 bool usingSoftwareDynamicGL()
 {
     if (QCoreApplication::testAttribute(Qt::AA_UseSoftwareOpenGL))
         return true;
-#if defined(Q_OS_WIN) && !defined(QT_NO_OPENGL)
+#if defined(Q_OS_WIN) && QT_CONFIG(opengl)
     HMODULE handle = static_cast<HMODULE>(QOpenGLContext::openGLModuleHandle());
     wchar_t path[MAX_PATH];
     DWORD size = GetModuleFileName(handle, path, MAX_PATH);
@@ -187,6 +220,94 @@ bool usingSoftwareDynamicGL()
 #else
     return false;
 #endif
+}
+
+void setupProxyPac(base::CommandLine *commandLine){
+    if (commandLine->HasSwitch(switches::kProxyPacUrl)) {
+        QUrl pac_url(toQt(commandLine->GetSwitchValueASCII(switches::kProxyPacUrl)));
+        if (pac_url.isValid() && (pac_url.isLocalFile() ||
+            !pac_url.scheme().compare(QLatin1String("qrc"), Qt::CaseInsensitive))) {
+            QFile file;
+            if (pac_url.isLocalFile())
+              file.setFileName(pac_url.toLocalFile());
+            else
+              file.setFileName(pac_url.path().prepend(QChar(':')));
+            if (file.exists() && file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+               QByteArray ba = file.readAll();
+               commandLine->RemoveSwitch(switches::kProxyPacUrl);
+               commandLine->AppendSwitchASCII(switches::kProxyPacUrl,
+                   ba.toBase64().prepend("data:application/x-javascript-config;base64,").toStdString());
+            }
+        }
+    }
+}
+
+static bool waitForViz = false;
+static void completeVizCleanup()
+{
+    waitForViz = false;
+}
+
+static void cleanupVizProcess()
+{
+    auto gpuChildThread = content::GpuChildThread::instance();
+    if (!gpuChildThread)
+        return;
+    auto vizMain = gpuChildThread->viz_main();
+    auto vizCompositorThreadRunner = vizMain->viz_compositor_thread_runner();
+    if (!vizCompositorThreadRunner)
+        return;
+    waitForViz = true;
+    content::GetHostFrameSinkManager()->SetConnectionLostCallback(base::DoNothing());
+    auto factory = static_cast<content::VizProcessTransportFactory*>(content::ImageTransportFactory::GetInstance());
+    factory->PrepareForShutDown();
+    vizCompositorThreadRunner->CleanupForShutdown(base::BindOnce(&completeVizCleanup));
+}
+
+static QStringList parseEnvCommandLine(const QString &cmdLine)
+{
+    QString arg;
+    QStringList arguments;
+    enum { Parse, Quoted, Unquoted } state = Parse;
+    for (const QChar c : cmdLine) {
+        switch (state) {
+        case Parse:
+            if (c == '"') {
+                state = Quoted;
+            } else if (c != ' ' ) {
+                arg += c;
+                state = Unquoted;
+            }
+            // skips spaces
+            break;
+        case Quoted:
+            if (c == '"') {
+                DCHECK(!arg.isEmpty());
+                state = Unquoted;
+            } else {
+                // includes spaces
+                arg += c;
+            }
+            break;
+        case Unquoted:
+            if (c == '"') {
+                // skips quotes
+                state = Quoted;
+            } else if (c == ' ') {
+                arguments.append(arg);
+                arg.clear();
+                state = Parse;
+            } else {
+                arg += c;
+            }
+            break;
+        }
+    }
+    // last arg
+    if (!arg.isEmpty()) {
+        arguments.append(arg);
+    }
+    return arguments;
 }
 
 scoped_refptr<QtWebEngineCore::WebEngineContext> WebEngineContext::m_handle;
@@ -206,7 +327,7 @@ void WebEngineContext::addProfileAdapter(ProfileAdapter *profileAdapter)
 {
     Q_ASSERT(!m_profileAdapters.contains(profileAdapter));
     const QString path = profileAdapter->dataPath();
-    if (!path.isEmpty()) {
+    if (!profileAdapter->isOffTheRecord() && !profileAdapter->storageName().isEmpty()) {
         for (auto profileAdapter : m_profileAdapters) {
             if (profileAdapter->dataPath() == path) {
                 // QTBUG-66068
@@ -235,15 +356,21 @@ void WebEngineContext::destroy()
     if (m_devtoolsServer)
         m_devtoolsServer->stop();
 
+
+    base::MessagePump::Delegate *delegate =
+            static_cast<base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl *>(
+                m_runLoop->delegate_);
     // Normally the GPU thread is shut down when the GpuProcessHost is destroyed
     // on IO thread (triggered by ~BrowserMainRunner). But by that time the UI
     // task runner is not working anymore so we need to do this earlier.
+    cleanupVizProcess();
+    while (waitForViz) {
+        while (delegate->DoWork().is_immediate()) { }
+        QThread::msleep(50);
+    }
     destroyGpuProcess();
-
-    base::MessagePump::Delegate *delegate =
-            static_cast<base::MessageLoopImpl *>(m_runLoop->delegate_);
     // Flush the UI message loop before quitting.
-    while (delegate->DoWork()) { }
+    while (delegate->DoWork().is_immediate()) { }
 
 #if QT_CONFIG(webengine_printing_and_pdf)
     // Kill print job manager early as it has a content::NotificationRegistrar
@@ -265,14 +392,20 @@ void WebEngineContext::destroy()
 
     // Handle any events posted by browser-context shutdown.
     // This should deliver all nessesery calls of DeleteSoon from PostTask
-    while (delegate->DoWork()) { }
+    while (delegate->DoWork().is_immediate()) { }
 
-    GLContextHelper::destroy();
     m_devtoolsServer.reset();
     m_runLoop->AfterRun();
 
     // Destroy the main runner, this stops main message loop
     m_browserRunner.reset();
+    // gpu thread is no longer around, so no more cotnext is used, remove the helper
+    GLContextHelper::destroy();
+
+    // These would normally be in the content-runner, but we allocated them separately:
+    m_startupData.reset();
+    m_serviceManagerEnvironment.reset();
+    m_discardableSharedMemoryManager.reset();
 
     // Destroying content-runner will force Chromium at_exit calls to run, and
     // reap child processes.
@@ -362,6 +495,18 @@ ProxyAuthentication WebEngineContext::qProxyNetworkAuthentication(QString host, 
 
 const static char kChromiumFlagsEnv[] = "QTWEBENGINE_CHROMIUM_FLAGS";
 const static char kDisableSandboxEnv[] = "QTWEBENGINE_DISABLE_SANDBOX";
+const static char kDisableInProcGpuThread[] = "QTWEBENGINE_DISABLE_GPU_THREAD";
+
+// static
+bool WebEngineContext::isGpuServiceOnUIThread()
+{
+    static bool threadedGpu =
+#if QT_CONFIG(opengl) && !defined(Q_OS_MACOS)
+            QOpenGLContext::supportsThreadedOpenGL() &&
+#endif
+            !qEnvironmentVariableIsSet(kDisableInProcGpuThread);
+    return !threadedGpu;
+}
 
 static void appendToFeatureList(std::string &featureList, const char *feature)
 {
@@ -386,7 +531,13 @@ WebEngineContext::WebEngineContext()
     : m_mainDelegate(new ContentMainDelegateQt)
     , m_globalQObject(new QObject())
 {
-    base::TaskScheduler::Create("Browser");
+#if defined(Q_OS_MACOS)
+    // The bundled handling is currently both completely broken in Chromium,
+    // and unnecessary for us.
+    base::mac::SetOverrideAmIBundled(false);
+#endif
+
+    base::ThreadPoolInstance::Create("Browser");
     m_contentRunner.reset(content::ContentMainRunner::Create());
     m_browserRunner = content::BrowserMainRunner::Create();
 
@@ -426,15 +577,15 @@ WebEngineContext::WebEngineContext()
 #endif
 
     base::CommandLine* parsedCommandLine = commandLine();
-
+    setupProxyPac(parsedCommandLine);
     parsedCommandLine->AppendSwitchPath(switches::kBrowserSubprocessPath, WebEngineLibraryInfo::getPath(content::CHILD_PROCESS_EXE));
+
+    parsedCommandLine->AppendSwitchASCII(service_manager::switches::kApplicationName, QCoreApplication::applicationName().toUtf8().toPercentEncoding().toStdString());
 
     // Enable sandboxing on OS X and Linux (Desktop / Embedded) by default.
     bool disable_sandbox = qEnvironmentVariableIsSet(kDisableSandboxEnv);
     if (!disable_sandbox) {
-#if defined(Q_OS_WIN)
-        parsedCommandLine->AppendSwitch(service_manager::switches::kNoSandbox);
-#elif defined(Q_OS_LINUX)
+#if defined(Q_OS_LINUX)
         parsedCommandLine->AppendSwitch(service_manager::switches::kDisableSetuidSandbox);
 #endif
     } else {
@@ -443,22 +594,6 @@ WebEngineContext::WebEngineContext()
     }
 
     parsedCommandLine->AppendSwitch(switches::kEnableThreadedCompositing);
-    // These are currently only default on OS X, and we don't support them:
-    parsedCommandLine->AppendSwitch(switches::kDisableZeroCopy);
-    parsedCommandLine->AppendSwitch(switches::kDisableGpuMemoryBufferCompositorResources);
-
-    // Enabled on OS X and Linux but currently not working. It worked in 5.7 on OS X.
-    parsedCommandLine->AppendSwitch(switches::kDisableGpuMemoryBufferVideoFrames);
-
-#if defined(Q_OS_MACOS)
-    // Accelerated decoding currently does not work on macOS due to issues with OpenGL Rectangle
-    // texture support. See QTBUG-60002.
-    parsedCommandLine->AppendSwitch(switches::kDisableAcceleratedVideoDecode);
-    // Same problem with Pepper using OpenGL images.
-    parsedCommandLine->AppendSwitch(switches::kDisablePepper3DImageChromium);
-    // Same problem with select popups.
-    parsedCommandLine->AppendSwitch(switches::kDisableNativeGpuMemoryBuffers);
-#endif
 
 #if defined(Q_OS_WIN)
     // This switch is used in Chromium's gl_context_wgl.cc file to determine whether to create
@@ -484,6 +619,9 @@ WebEngineContext::WebEngineContext()
         parsedCommandLine->AppendSwitch(switches::kDisableES3GLContext);
 #endif
 
+    // Do not advertise a feature we have removed at compile time
+    parsedCommandLine->AppendSwitch(switches::kDisableSpeechAPI);
+
     std::string disableFeatures;
     std::string enableFeatures;
     // Needed to allow navigations within pages that were set using setHtml(). One example is
@@ -491,26 +629,38 @@ WebEngineContext::WebEngineContext()
     // This is deprecated behavior, and will be removed in a future Chromium version, as per
     // upstream Chromium commit ba52f56207a4b9d70b34880fbff2352e71a06422.
     appendToFeatureList(enableFeatures, features::kAllowContentInitiatedDataUrlNavigations.name);
-    // Surface synchronization breaks our current graphics integration (since 65)
-    appendToFeatureList(disableFeatures, features::kEnableSurfaceSynchronization.name);
-    // Viz Display Compositor is enabled by default since 73. Doesn't work for us (also implies SurfaceSynchronization)
-    appendToFeatureList(disableFeatures, features::kVizDisplayCompositor.name);
+
+    appendToFeatureList(enableFeatures, features::kTracingServiceInProcess.name);
+
     // The video-capture service is not functioning at this moment (since 69)
     appendToFeatureList(disableFeatures, features::kMojoVideoCapture.name);
-    // Breaks WebEngineNewViewRequest.userInitiated API (since 73)
-    appendToFeatureList(disableFeatures, features::kUserActivationV2.name);
 
-    appendToFeatureList(disableFeatures, features::kBackgroundFetch.name);
-
-#if QT_CONFIG(webengine_printing_and_pdf)
-    appendToFeatureList(disableFeatures, printing::features::kUsePdfCompositorServiceForPrint.name);
+#if defined(Q_OS_LINUX)
+    // broken and crashy (even upstream):
+    appendToFeatureList(disableFeatures, features::kFontSrcLocalMatching.name);
 #endif
+
+    // We don't support the skia renderer (enabled by default on Linux since 80)
+    appendToFeatureList(disableFeatures, features::kUseSkiaRenderer.name);
+
+    appendToFeatureList(disableFeatures, network::features::kDnsOverHttpsUpgrade.name);
+
+    // When enabled, event.movement is calculated in blink instead of in browser.
+    appendToFeatureList(disableFeatures, features::kConsolidatedMovementXY.name);
+
+    // Explicitly tell Chromium about default-on features we do not support
+    appendToFeatureList(disableFeatures, features::kBackgroundFetch.name);
+    appendToFeatureList(disableFeatures, features::kSmsReceiver.name);
+    appendToFeatureList(disableFeatures, features::kWebPayments.name);
+    appendToFeatureList(disableFeatures, features::kWebUsb.name);
+    appendToFeatureList(disableFeatures, media::kPictureInPicture.name);
+
+    // Breaks current colordialog tests.
+    appendToFeatureList(disableFeatures, features::kFormControlsRefresh.name);
 
     if (useEmbeddedSwitches) {
         // embedded switches are based on the switches for Android, see content/browser/android/content_startup_flags.cc
         appendToFeatureList(enableFeatures, features::kOverlayScrollbar.name);
-        if (!parsedCommandLine->HasSwitch(switches::kDisablePinch))
-            parsedCommandLine->AppendSwitch(switches::kEnablePinch);
         parsedCommandLine->AppendSwitch(switches::kEnableViewport);
         parsedCommandLine->AppendSwitch(switches::kMainFrameResizesAreOrientationChanges);
         parsedCommandLine->AppendSwitch(cc::switches::kDisableCompositedAntialiasing);
@@ -525,7 +675,7 @@ WebEngineContext::WebEngineContext()
     GLContextHelper::initialize();
 
     const char *glType = 0;
-#ifndef QT_NO_OPENGL
+#if QT_CONFIG(opengl)
 
     const bool tryGL = (usingDefaultSGBackend() && !usingSoftwareDynamicGL() &&
                         QGuiApplicationPrivate::platformIntegration()->hasCapability(QPlatformIntegration::OpenGL))
@@ -541,7 +691,7 @@ WebEngineContext::WebEngineContext()
                 || usingANGLE())
             {
                 if (qt_gl_global_share_context()->isOpenGLES()) {
-                    glType = gl::kGLImplementationEGLName;
+                    glType = usingANGLE() ? gl::kGLImplementationANGLEName : gl::kGLImplementationEGLName;
                 } else {
                     QOpenGLContext context;
                     QSurfaceFormat format;
@@ -591,7 +741,7 @@ WebEngineContext::WebEngineContext()
             qWarning("WebEngineContext used before QtWebEngine::initialize() or OpenGL context creation failed.");
         }
     }
-#endif
+#endif // QT_CONFIG(opengl)
 
     if (glType) {
         parsedCommandLine->AppendSwitchASCII(switches::kUseGL, glType);
@@ -604,31 +754,43 @@ WebEngineContext::WebEngineContext()
         parsedCommandLine->AppendSwitch(switches::kDisableGpu);
     }
 
-    bool threadedGpu = true;
-#ifndef QT_NO_OPENGL
-    threadedGpu = QOpenGLContext::supportsThreadedOpenGL();
-#endif
-    registerMainThreadFactories(threadedGpu);
-
-    SetContentClient(new ContentClientQt);
-
-    content::StartBrowserTaskScheduler();
-    content::BrowserTaskExecutor::Create();
-
-    mojo::core::Init();
+    registerMainThreadFactories();
 
     content::ContentMainParams contentMainParams(m_mainDelegate.get());
 #if defined(OS_WIN)
+    contentMainParams.sandbox_info = staticSandboxInterfaceInfo();
     sandbox::SandboxInterfaceInfo sandbox_info = {0};
-    content::InitializeSandboxInfo(&sandbox_info);
-    contentMainParams.sandbox_info = &sandbox_info;
+    if (!contentMainParams.sandbox_info) {
+        content::InitializeSandboxInfo(&sandbox_info);
+        contentMainParams.sandbox_info = &sandbox_info;
+    }
 #endif
     m_contentRunner->Initialize(contentMainParams);
-    m_browserRunner->Initialize(content::MainFunctionParams(*base::CommandLine::ForCurrentProcess()));
+
+    mojo::core::Configuration mojoConfiguration;
+    mojoConfiguration.is_broker_process = true;
+    mojo::core::Init(mojoConfiguration);
+
+    // This block mirrors ContentMainRunnerImpl::RunServiceManager():
+    m_mainDelegate->PreCreateMainMessageLoop();
+    base::MessagePump::OverrideMessagePumpForUIFactory(messagePumpFactory);
+    content::BrowserTaskExecutor::Create();
+    m_mainDelegate->PostEarlyInitialization(false);
+    content::StartBrowserThreadPool();
+    content::BrowserTaskExecutor::PostFeatureListSetup();
+    tracing::InitTracingPostThreadPoolStartAndFeatureList();
+    m_discardableSharedMemoryManager = std::make_unique<discardable_memory::DiscardableSharedMemoryManager>();
+    base::PowerMonitor::Initialize(std::make_unique<base::PowerMonitorDeviceSource>());
+    m_serviceManagerEnvironment = std::make_unique<content::ServiceManagerEnvironment>(content::BrowserTaskExecutor::CreateIOThread());
+    m_startupData = m_serviceManagerEnvironment->CreateBrowserStartupData();
 
     // Once the MessageLoop has been created, attach a top-level RunLoop.
     m_runLoop.reset(new base::RunLoop);
     m_runLoop->BeforeRun();
+
+    content::MainFunctionParams mainParams(*base::CommandLine::ForCurrentProcess());
+    mainParams.startup_data = m_startupData.get();
+    m_browserRunner->Initialize(mainParams);
 
     m_devtoolsServer.reset(new DevToolsServerQt());
     m_devtoolsServer->start();
@@ -665,7 +827,7 @@ WebEngineContext::WebEngineContext()
     m_printJobManager.reset(new printing::PrintJobManager());
 #endif
 
-#ifndef QT_NO_ACCESSIBILITY
+#if QT_CONFIG(accessibility)
     m_accessibilityActivationObserver.reset(new AccessibilityActivationObserver());
 #endif
 
@@ -698,7 +860,7 @@ base::CommandLine* WebEngineContext::commandLine() {
         QStringList appArgs = QCoreApplication::arguments();
         if (qEnvironmentVariableIsSet(kChromiumFlagsEnv)) {
             appArgs = appArgs.mid(0, 1); // Take application name and drop the rest
-            appArgs.append(QString::fromLocal8Bit(qgetenv(kChromiumFlagsEnv)).split(' '));
+            appArgs.append(parseEnvCommandLine(qEnvironmentVariable(kChromiumFlagsEnv)));
         }
 #ifdef Q_OS_WIN
         appArgs.removeAll(QStringLiteral("--enable-webgl-software-rendering"));

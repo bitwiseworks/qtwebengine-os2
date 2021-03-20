@@ -26,9 +26,13 @@
 **
 ****************************************************************************/
 
+#include <httpserver.h>
+
 #include <QtCore/QScopedPointer>
+#include <QTemporaryDir>
 #include <QtQuickTest/quicktest.h>
 #include <QtWebEngine/QQuickWebEngineProfile>
+#include <QQmlEngine>
 #include "qt_webengine_quicktest.h"
 
 #if defined(Q_OS_LINUX) && defined(QT_DEBUG)
@@ -95,6 +99,19 @@ static void sigSegvHandler(int signum)
 }
 #endif
 
+class TempDir : public QObject {
+    Q_OBJECT
+
+public:
+    Q_INVOKABLE QString path() {
+        Q_ASSERT(tempDir.isValid());
+        return tempDir.isValid() ? tempDir.path() : QString();
+    }
+
+private:
+    QTemporaryDir tempDir;
+};
+
 int main(int argc, char **argv)
 {
 #if defined(Q_OS_LINUX) && defined(QT_DEBUG)
@@ -107,8 +124,6 @@ int main(int argc, char **argv)
     sigaction(SIGSEGV, &sigAction, 0);
 #endif
 
-    // Inject the mock ui delegates module
-    qputenv("QML2_IMPORT_PATH", QByteArray(TESTS_SOURCE_DIR "qmltests/mock-delegates"));
     QScopedPointer<Application> app;
 
     // Force to use English language for testing due to error message checks
@@ -127,9 +142,17 @@ int main(int argc, char **argv)
     }
     QtWebEngine::initialize();
     QQuickWebEngineProfile::defaultProfile()->setOffTheRecord(true);
+    qmlRegisterType<TempDir>("Test.util", 1, 0, "TempDir");
 
     QTEST_SET_MAIN_SOURCE_PATH
+    qmlRegisterSingletonType<HttpServer>("Test.Shared", 1, 0, "HttpServer", [&] (QQmlEngine *, QJSEngine *) {
+        auto server = new HttpServer;
+        server->setResourceDirs({ TESTS_SHARED_DATA_DIR, QUICK_TEST_SOURCE_DIR });
+        return server;
+    });
 
     int i = quick_test_main(argc, argv, "qmltests", QUICK_TEST_SOURCE_DIR);
     return i;
 }
+
+#include "tst_qmltests.moc"

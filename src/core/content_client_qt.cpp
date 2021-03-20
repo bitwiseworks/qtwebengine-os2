@@ -54,7 +54,7 @@
 #include "ui/base/layout.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
-
+#include "services/service_manager/embedder/switches.h"
 #include "type_conversion.h"
 
 #include <QCoreApplication>
@@ -68,9 +68,7 @@
 #include "third_party/widevine/cdm/widevine_cdm_common.h"
 #if BUILDFLAG(ENABLE_WIDEVINE) && !BUILDFLAG(ENABLE_WIDEVINE_CDM_COMPONENT)
 #define WIDEVINE_CDM_AVAILABLE_NOT_COMPONENT
-namespace switches {
-const char kCdmWidevinePath[] = "widevine-path";
-}
+
 // File name of the CDM on different platforms.
 const char kWidevineCdmFileName[] =
 #if defined(OS_MACOSX)
@@ -114,6 +112,15 @@ static QString getLocalAppDataDir()
         result = QDir::fromNativeSeparators(QString::fromWCharArray(path));
     return result;
 }
+
+static QString getProgramFilesDir(bool x86Dir = false)
+{
+    QString result;
+    wchar_t path[MAX_PATH];
+    if (SHGetSpecialFolderPath(0, path, x86Dir ? CSIDL_PROGRAM_FILESX86 : CSIDL_PROGRAM_FILES, FALSE))
+        result = QDir::fromNativeSeparators(QString::fromWCharArray(path));
+    return result;
+}
 #endif
 
 #if QT_CONFIG(webengine_pepper_plugins)
@@ -129,7 +136,8 @@ static QString getLocalAppDataDir()
 static const int32_t kPepperFlashPermissions = ppapi::PERMISSION_DEV |
                                                ppapi::PERMISSION_PRIVATE |
                                                ppapi::PERMISSION_BYPASS_USER_GESTURE |
-                                               ppapi::PERMISSION_FLASH;
+                                               ppapi::PERMISSION_FLASH |
+                                               ppapi::PERMISSION_SOCKET;
 
 namespace switches {
 const char kPpapiFlashPath[]    = "ppapi-flash-path";
@@ -191,7 +199,7 @@ void AddPepperFlashFromSystem(std::vector<content::PepperPluginInfo>* plugins)
 {
     QStringList pluginPaths;
 #if defined(Q_OS_WIN)
-    QString winDir = QDir::fromNativeSeparators(qgetenv("WINDIR"));
+    QString winDir = QDir::fromNativeSeparators(qEnvironmentVariable("WINDIR"));
     if (winDir.isEmpty())
         winDir = QString::fromLatin1("C:/Windows");
     QDir pluginDir(winDir + "/System32/Macromed/Flash");
@@ -277,7 +285,7 @@ static bool IsWidevineAvailable(base::FilePath *cdm_path,
                                 content::CdmCapability *capability)
 {
     QStringList pluginPaths;
-    const base::CommandLine::StringType widevine_argument = base::CommandLine::ForCurrentProcess()->GetSwitchValueNative(switches::kCdmWidevinePath);
+    const base::CommandLine::StringType widevine_argument = base::CommandLine::ForCurrentProcess()->GetSwitchValueNative(service_manager::switches::kCdmWidevinePath);
     if (!widevine_argument.empty())
         pluginPaths << QtWebEngineCore::toQt(widevine_argument);
     else {
@@ -286,11 +294,11 @@ static bool IsWidevineAvailable(base::FilePath *cdm_path,
         pluginPaths << ppapiPluginsPath() + QStringLiteral("/") + QString::fromLatin1(kWidevineCdmFileName);
 #endif
 #if defined(Q_OS_OSX)
-    QDir potentialWidevineDir("/Applications/Google Chrome.app/Contents/Versions");
+    QDir potentialWidevineDir("/Applications/Google Chrome.app/Contents/Frameworks");
     if (potentialWidevineDir.exists()) {
         QFileInfoList widevineVersionDirs = potentialWidevineDir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot,
                                                                                QDir::Name | QDir::Reversed);
-        const QString library = QLatin1String("/Google Chrome Framework.framework/Versions/A/Libraries/"
+        const QString library = QLatin1String("/Versions/Current/Libraries/"
                                               "WidevineCdm/_platform_specific/mac_x64/libwidevinecdm.dylib");
         for (const QFileInfo &info : widevineVersionDirs)
             pluginPaths << info.absoluteFilePath() + library;
@@ -306,6 +314,28 @@ static bool IsWidevineAvailable(base::FilePath *cdm_path,
         }
     }
 #elif defined(Q_OS_WIN)
+    const QString googleChromeDir = QLatin1String("/Google/Chrome/Application");
+    const QStringList programFileDirs{getProgramFilesDir() + googleChromeDir,
+                                      getProgramFilesDir(true) + googleChromeDir};
+    for (const QString &dir : programFileDirs) {
+        QDir d(dir);
+        if (d.exists()) {
+            QFileInfoList widevineVersionDirs = d.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name | QDir::Reversed);
+            for (int i = 0; i < widevineVersionDirs.size(); ++i) {
+                QString versionDirPath(widevineVersionDirs.at(i).absoluteFilePath());
+#ifdef WIN64
+                QString potentialWidevinePluginPath = versionDirPath +
+                                                        "/WidevineCdm/_platform_specific/win_x64/" +
+                                                        QString::fromLatin1(kWidevineCdmFileName);
+#else
+                QString potentialWidevinePluginPath = versionDirPath +
+                                                        "/WidevineCdm/_platform_specific/win_x86/" +
+                                                        QString::fromLatin1(kWidevineCdmFileName);
+#endif
+                pluginPaths << potentialWidevinePluginPath;
+            }
+        }
+    }
     QDir potentialWidevineDir(getLocalAppDataDir() + "/Google/Chrome/User Data/WidevineCDM");
     if (potentialWidevineDir.exists()) {
         QFileInfoList widevineVersionDirs = potentialWidevineDir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name | QDir::Reversed);
@@ -320,7 +350,12 @@ static bool IsWidevineAvailable(base::FilePath *cdm_path,
         }
     }
 #elif defined(Q_OS_LINUX)
-        pluginPaths << QStringLiteral("/opt/google/chrome/libwidevinecdm.so") // Google Chrome
+        pluginPaths << QStringLiteral("/opt/google/chrome/libwidevinecdm.so") // Old Google Chrome
+#if Q_PROCESSOR_WORDSIZE == 8
+                    << QStringLiteral("/opt/google/chrome/WidevineCdm/_platform_specific/linux_x64/libwidevinecdm.so")
+#else
+                    << QStringLiteral("/opt/google/chrome/WidevineCdm/_platform_specific/linux_x86/libwidevinecdm.so")
+#endif
                     << QStringLiteral("/usr/lib/chromium/libwidevinecdm.so") // Arch
                     << QStringLiteral("/usr/lib/chromium-browser/libwidevinecdm.so") // Ubuntu/neon
                     << QStringLiteral("/usr/lib64/chromium/libwidevinecdm.so"); // OpenSUSE style
@@ -341,8 +376,8 @@ static bool IsWidevineAvailable(base::FilePath *cdm_path,
             // Add the supported encryption schemes as if they came from the
             // component manifest. This list must match the CDM that is being
             // bundled with Chrome.
-            capability->encryption_schemes.insert(media::EncryptionMode::kCenc);
-            capability->encryption_schemes.insert(media::EncryptionMode::kCbcs);
+            capability->encryption_schemes.insert(media::EncryptionScheme::kCenc);
+            capability->encryption_schemes.insert(media::EncryptionScheme::kCbcs);
 
             // Temporary session is always supported.
             capability->session_types.insert(media::CdmSessionType::kTemporary);
@@ -385,7 +420,7 @@ void ContentClientQt::AddContentDecryptionModules(std::vector<content::CdmInfo> 
 
             // Supported codecs are hard-coded in ExternalClearKeyProperties.
             content::CdmCapability capability(
-                {}, {media::EncryptionMode::kCenc, media::EncryptionMode::kCbcs},
+                {}, {media::EncryptionScheme::kCenc, media::EncryptionScheme::kCbcs},
                 {media::CdmSessionType::kTemporary,
                  media::CdmSessionType::kPersistentLicense},
                 {});
@@ -414,21 +449,22 @@ void ContentClientQt::AddAdditionalSchemes(Schemes* schemes)
     schemes->standard_schemes.push_back("chrome-extension");
 }
 
-base::StringPiece ContentClientQt::GetDataResource(int resource_id, ui::ScaleFactor scale_factor) const {
+base::StringPiece ContentClientQt::GetDataResource(int resource_id, ui::ScaleFactor scale_factor)
+{
     return ui::ResourceBundle::GetSharedInstance().GetRawDataResourceForScale(resource_id, scale_factor);
 }
 
-base::RefCountedMemory *ContentClientQt::GetDataResourceBytes(int resource_id) const
+base::RefCountedMemory *ContentClientQt::GetDataResourceBytes(int resource_id)
 {
     return ui::ResourceBundle::GetSharedInstance().LoadDataResourceBytes(resource_id);
 }
 
-gfx::Image &ContentClientQt::GetNativeImageNamed(int resource_id) const
+gfx::Image &ContentClientQt::GetNativeImageNamed(int resource_id)
 {
     return ui::ResourceBundle::GetSharedInstance().GetNativeImageNamed(resource_id);
 }
 
-base::string16 ContentClientQt::GetLocalizedString(int message_id) const
+base::string16 ContentClientQt::GetLocalizedString(int message_id)
 {
     return l10n_util::GetStringUTF16(message_id);
 }

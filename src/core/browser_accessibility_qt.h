@@ -43,7 +43,7 @@
 #include <QtGui/qaccessible.h>
 #include "content/browser/accessibility/browser_accessibility.h"
 
-#ifndef QT_NO_ACCESSIBILITY
+#if QT_CONFIG(accessibility)
 
 namespace content {
 
@@ -68,6 +68,7 @@ public:
     // navigation, hierarchy
     QAccessibleInterface *parent() const override;
     QAccessibleInterface *child(int index) const override;
+    QAccessibleInterface *focusChild() const override;
     int childCount() const override;
     int indexOfChild(const QAccessibleInterface *) const override;
 
@@ -150,5 +151,5 @@ QAccessibleInterface *toQAccessibleInterface(BrowserAccessibility *acc);
 
 } // namespace content
 
-#endif // QT_NO_ACCESSIBILITY
+#endif // QT_CONFIG(accessibility)
 #endif

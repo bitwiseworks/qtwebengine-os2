@@ -61,6 +61,7 @@
 #include <QSharedPointer>
 #include <QString>
 #include <QUrl>
+#include <QPointer>
 
 namespace content {
 class WebContents;
@@ -79,12 +80,14 @@ class QPageLayout;
 class QString;
 class QTemporaryDir;
 class QWebChannel;
+class QWebEngineUrlRequestInterceptor;
 QT_END_NAMESPACE
 
 namespace QtWebEngineCore {
 
 class DevToolsFrontendQt;
 class FaviconManager;
+class FindTextHelper;
 class MessagePassingInterface;
 class ProfileQt;
 class RenderViewObserverHostQt;
@@ -109,8 +112,17 @@ public:
     void load(const QWebEngineHttpRequest &request);
     void setContent(const QByteArray &data, const QString &mimeType, const QUrl &baseUrl);
 
+    using LifecycleState = WebContentsAdapterClient::LifecycleState;
+    LifecycleState lifecycleState() const;
+    void setLifecycleState(LifecycleState state);
+    LifecycleState recommendedState() const;
+
+    bool isVisible() const;
+    void setVisible(bool visible);
+
     bool canGoBack() const;
     bool canGoForward() const;
+    bool canGoToOffset(int) const;
     void stop();
     void reload();
     void reloadAndBypassCache();
@@ -130,6 +142,8 @@ public:
     void selectAll();
     void unselect();
 
+    void navigateBack();
+    void navigateForward();
     void navigateToIndex(int);
     void navigateToOffset(int);
     int navigationEntryCount();
@@ -147,15 +161,14 @@ public:
     quint64 runJavaScriptCallbackResult(const QString &javaScript, quint32 worldId);
     quint64 fetchDocumentMarkup();
     quint64 fetchDocumentInnerText();
-    quint64 findText(const QString &subString, bool caseSensitively, bool findBackward);
-    void stopFinding();
     void updateWebPreferences(const content::WebPreferences &webPreferences);
     void download(const QUrl &url, const QString &suggestedFileName,
                   const QUrl &referrerUrl = QUrl(),
                   ReferrerPolicy referrerPolicy = ReferrerPolicy::Default);
     bool isAudioMuted() const;
     void setAudioMuted(bool mute);
-    bool recentlyAudible();
+    bool recentlyAudible() const;
+    qint64 renderProcessPid() const;
 
     // Must match blink::WebMediaPlayerAction::Type.
     enum MediaPlayerAction {
@@ -171,6 +184,8 @@ public:
 
     void inspectElementAt(const QPoint &location);
     bool hasInspector() const;
+    bool isInspector() const;
+    void setInspector(bool inspector);
     void exitFullScreen();
     void requestClose();
     void changedFullScreen();
@@ -178,12 +193,10 @@ public:
     void closeDevToolsFrontend();
     void devToolsFrontendDestroyed(DevToolsFrontendQt *frontend);
 
-    void wasShown();
-    void wasHidden();
     void grantMediaAccessPermission(const QUrl &securityOrigin, WebContentsAdapterClient::MediaRequestFlags flags);
-    void runGeolocationRequestCallback(const QUrl &securityOrigin, bool allowed);
-    void grantMouseLockPermission(bool granted);
-    void runUserNotificationRequestCallback(const QUrl &securityOrigin, bool allowed);
+    void grantMouseLockPermission(const QUrl &securityOrigin, bool granted);
+    void handlePendingMouseLockPermission();
+    void grantFeaturePermission(const QUrl &securityOrigin, ProfileAdapter::PermissionType feature, ProfileAdapter::PermissionState allowed);
 
     void setBackgroundColor(const QColor &color);
     QAccessibleInterface *browserAccessible();
@@ -194,6 +207,7 @@ public:
     void setWebChannel(QWebChannel *, uint worldId);
 #endif
     FaviconManager *faviconManager();
+    FindTextHelper *findTextHelper();
 
     QPointF lastScrollOffset() const;
     QSizeF lastContentsSize() const;
@@ -218,15 +232,31 @@ public:
     void focusIfNecessary();
     bool isFindTextInProgress() const;
     bool hasFocusedFrame() const;
+    void resetSelection();
 
     // meant to be used within WebEngineCore only
     void initialize(content::SiteInstance *site);
     content::WebContents *webContents() const;
+    void updateRecommendedState();
+    void setRequestInterceptor(QWebEngineUrlRequestInterceptor *interceptor);
+    QWebEngineUrlRequestInterceptor* requestInterceptor() const;
 
 private:
     Q_DISABLE_COPY(WebContentsAdapter)
     void waitForUpdateDragActionCalled();
     bool handleDropDataFileContents(const content::DropData &dropData, QMimeData *mimeData);
+
+    void wasShown();
+    void wasHidden();
+
+    LifecycleState determineRecommendedState() const;
+
+    void freeze();
+    void unfreeze();
+    void discard();
+    void undiscard();
+
+    void initializeRenderPrefs();
 
     ProfileAdapter *m_profileAdapter;
     std::unique_ptr<content::WebContents> m_webContents;
@@ -239,7 +269,7 @@ private:
 #endif
     WebContentsAdapterClient *m_adapterClient;
     quint64 m_nextRequestId;
-    int m_lastFindRequestId;
+    QMap<QUrl, bool> m_pendingMouseLockPermissions;
     std::unique_ptr<content::DropData> m_currentDropData;
     uint m_currentDropAction;
     bool m_updateDragActionCalled;
@@ -247,6 +277,10 @@ private:
     QPointF m_lastDragScreenPos;
     std::unique_ptr<QTemporaryDir> m_dndTmpDir;
     DevToolsFrontendQt *m_devToolsFrontend;
+    LifecycleState m_lifecycleState = LifecycleState::Active;
+    LifecycleState m_recommendedState = LifecycleState::Active;
+    bool m_inspector = false;
+    QPointer<QWebEngineUrlRequestInterceptor> m_requestInterceptor;
 };
 
 } // namespace QtWebEngineCore

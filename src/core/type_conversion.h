@@ -55,6 +55,7 @@
 #include "content/public/common/file_chooser_file_info.h"
 #include "favicon_manager.h"
 #include "net/cookies/canonical_cookie.h"
+#include "third_party/blink/public/mojom/favicon/favicon_url.mojom-forward.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkPixelRef.h"
@@ -64,13 +65,14 @@
 #include "url/gurl.h"
 
 QT_FORWARD_DECLARE_CLASS(QMatrix4x4)
-
-namespace content {
-struct FaviconURL;
-}
+QT_FORWARD_DECLARE_CLASS(QSslCertificate)
 
 namespace gfx {
 class ImageSkiaRep;
+}
+
+namespace net {
+class X509Certificate;
 }
 
 namespace QtWebEngineCore {
@@ -212,7 +214,7 @@ inline QDateTime toQt(base::Time time)
 }
 
 inline base::Time toTime(const QDateTime &dateTime) {
-    return base::Time::FromInternalValue(dateTime.toMSecsSinceEpoch());
+    return base::Time::FromJavaTime(dateTime.toMSecsSinceEpoch());
 }
 
 inline QNetworkCookie toQt(const net::CanonicalCookie & cookie)
@@ -289,7 +291,9 @@ inline QStringList fromVector(const std::vector<base::string16> &vector)
     return result;
 }
 
-FaviconInfo toFaviconInfo(const content::FaviconURL &);
+FaviconInfo toFaviconInfo(const blink::mojom::FaviconURLPtr &favicon_url);
+
+QList<QSslCertificate> toCertificateChain(net::X509Certificate *certificate);
 
 } // namespace QtWebEngineCore
 

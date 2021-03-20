@@ -43,6 +43,7 @@
 #include "profile_adapter.h"
 #include "certificate_error_controller.h"
 #include "file_picker_controller.h"
+#include "find_text_helper.h"
 #include "javascript_dialog_controller.h"
 #include "touch_selection_menu_controller.h"
 
@@ -61,6 +62,7 @@
 #include "qquickwebenginesettings_p.h"
 #include "qquickwebenginescript_p.h"
 #include "qquickwebenginetouchhandleprovider_p_p.h"
+#include "qwebenginefindtextresult.h"
 #include "qwebenginequotarequest.h"
 #include "qwebengineregisterprotocolhandlerrequest.h"
 
@@ -127,6 +129,7 @@ QQuickWebEngineViewPrivate::QQuickWebEngineViewPrivate()
     , devicePixelRatio(QGuiApplication::primaryScreen()->devicePixelRatio())
     , m_webChannel(0)
     , m_webChannelWorld(0)
+    , m_defaultAudioMuted(false)
     , m_isBeingAdopted(false)
     , m_backgroundColor(Qt::white)
     , m_zoomFactor(1.0)
@@ -136,7 +139,7 @@ QQuickWebEngineViewPrivate::QQuickWebEngineViewPrivate()
     memset(actions, 0, sizeof(actions));
 
     QString platform = qApp->platformName().toLower();
-    if (platform == QLatin1Literal("eglfs"))
+    if (platform == QLatin1String("eglfs"))
         m_ui2Enabled = true;
 
     const QByteArray dialogSet = qgetenv("QTWEBENGINE_DIALOG_SET");
@@ -164,7 +167,6 @@ QQuickWebEngineViewPrivate::~QQuickWebEngineViewPrivate()
 {
     Q_ASSERT(m_profileInitialized);
     m_profile->d_ptr->removeWebContentsAdapterClient(this);
-    adapter->stopFinding();
     if (faviconProvider)
         faviconProvider->detach(q_ptr);
     // q_ptr->d_ptr might be null due to destroy()
@@ -273,8 +275,8 @@ void QQuickWebEngineViewPrivate::navigationRequested(int navigationType, const Q
     Q_EMIT q->navigationRequested(&navigationRequest);
 
     navigationRequestAction = navigationRequest.action();
-    if ((navigationRequestAction == WebContentsAdapterClient::AcceptRequest) && adapter->isFindTextInProgress())
-        adapter->stopFinding();
+    if ((navigationRequestAction == WebContentsAdapterClient::AcceptRequest) && adapter->findTextHelper()->isFindTextInProgress())
+        adapter->findTextHelper()->stopFinding();
 }
 
 void QQuickWebEngineViewPrivate::javascriptDialog(QSharedPointer<JavaScriptDialogController> dialog)
@@ -296,7 +298,7 @@ void QQuickWebEngineViewPrivate::allowCertificateError(const QSharedPointer<Cert
     // mark the object for gc by creating temporary jsvalue
     qmlEngine(q)->newQObject(quickController);
     Q_EMIT q->certificateError(quickController);
-    if (!quickController->deferred() && !quickController->answered())
+    if (!quickController->overridable() || (!quickController->deferred() && !quickController->answered()))
         quickController->rejectCertificate();
     else
         m_certificateErrorControllers.append(errorController);
@@ -315,16 +317,25 @@ void QQuickWebEngineViewPrivate::selectClientCert(const QSharedPointer<ClientCer
 #endif
 }
 
-void QQuickWebEngineViewPrivate::runGeolocationPermissionRequest(const QUrl &url)
+static QQuickWebEngineView::Feature toFeature(QtWebEngineCore::ProfileAdapter::PermissionType type)
 {
-    Q_Q(QQuickWebEngineView);
-    Q_EMIT q->featurePermissionRequested(url, QQuickWebEngineView::Geolocation);
+    switch (type) {
+    case QtWebEngineCore::ProfileAdapter::NotificationPermission:
+        return QQuickWebEngineView::Notifications;
+    case QtWebEngineCore::ProfileAdapter::GeolocationPermission:
+        return QQuickWebEngineView::Geolocation;
+    default:
+        break;
+    }
+    Q_UNREACHABLE();
+    return QQuickWebEngineView::Feature(-1);
 }
 
-void QQuickWebEngineViewPrivate::runUserNotificationPermissionRequest(const QUrl &url)
+
+void QQuickWebEngineViewPrivate::runFeaturePermissionRequest(QtWebEngineCore::ProfileAdapter::PermissionType permission, const QUrl &url)
 {
     Q_Q(QQuickWebEngineView);
-    Q_EMIT q->featurePermissionRequested(url, QQuickWebEngineView::Notifications);
+    Q_EMIT q->featurePermissionRequested(url, toFeature(permission));
 }
 
 void QQuickWebEngineViewPrivate::showColorDialog(QSharedPointer<ColorChooserController> controller)
@@ -368,11 +379,14 @@ void QQuickWebEngineViewPrivate::titleChanged(const QString &title)
     Q_EMIT q->titleChanged();
 }
 
-void QQuickWebEngineViewPrivate::urlChanged(const QUrl &url)
+void QQuickWebEngineViewPrivate::urlChanged()
 {
     Q_Q(QQuickWebEngineView);
-    Q_UNUSED(url);
-    Q_EMIT q->urlChanged();
+    QUrl url = adapter->activeUrl();
+    if (m_url != url) {
+        m_url = url;
+        Q_EMIT q->urlChanged();
+    }
 }
 
 void QQuickWebEngineViewPrivate::iconChanged(const QUrl &url)
@@ -413,10 +427,21 @@ void QQuickWebEngineViewPrivate::didUpdateTargetURL(const QUrl &hoveredUrl)
     Q_EMIT q->linkHovered(hoveredUrl);
 }
 
+void QQuickWebEngineViewPrivate::selectionChanged()
+{
+    updateEditActions();
+}
+
 void QQuickWebEngineViewPrivate::recentlyAudibleChanged(bool recentlyAudible)
 {
     Q_Q(QQuickWebEngineView);
     Q_EMIT q->recentlyAudibleChanged(recentlyAudible);
+}
+
+void QQuickWebEngineViewPrivate::renderProcessPidChanged(qint64 pid)
+{
+    Q_Q(QQuickWebEngineView);
+    Q_EMIT q->renderProcessPidChanged(pid);
 }
 
 QRectF QQuickWebEngineViewPrivate::viewportRect() const
@@ -523,12 +548,14 @@ void QQuickWebEngineViewPrivate::unhandledKeyEvent(QKeyEvent *event)
         QCoreApplication::sendEvent(q->parentItem(), event);
 }
 
-void QQuickWebEngineViewPrivate::adoptNewWindow(QSharedPointer<WebContentsAdapter> newWebContents, WindowOpenDisposition disposition, bool userGesture, const QRect &, const QUrl &targetUrl)
+QSharedPointer<WebContentsAdapter>
+QQuickWebEngineViewPrivate::adoptNewWindow(QSharedPointer<WebContentsAdapter> newWebContents,
+                                           WindowOpenDisposition disposition, bool userGesture,
+                                           const QRect &, const QUrl &targetUrl)
 {
     Q_Q(QQuickWebEngineView);
+    Q_ASSERT(newWebContents);
     QQuickWebEngineNewViewRequest request;
-    // This increases the ref-count of newWebContents and will tell Chromium
-    // to start loading it and possibly return it to its parent page window.open().
     request.m_adapter = newWebContents;
     request.m_isUserInitiated = userGesture;
     request.m_requestedUrl = targetUrl;
@@ -551,6 +578,11 @@ void QQuickWebEngineViewPrivate::adoptNewWindow(QSharedPointer<WebContentsAdapte
     }
 
     Q_EMIT q->newViewRequested(&request);
+
+    if (!request.m_isRequestHandled)
+        return nullptr;
+
+    return newWebContents;
 }
 
 bool QQuickWebEngineViewPrivate::isBeingAdopted()
@@ -645,11 +677,8 @@ void QQuickWebEngineViewPrivate::runMediaAccessPermissionRequest(const QUrl &sec
 
 void QQuickWebEngineViewPrivate::runMouseLockPermissionRequest(const QUrl &securityOrigin)
 {
-
-    Q_UNUSED(securityOrigin);
-
     // TODO: Add mouse lock support
-    adapter->grantMouseLockPermission(false);
+    adapter->grantMouseLockPermission(securityOrigin, false);
 }
 
 void QQuickWebEngineViewPrivate::runQuotaRequest(QWebEngineQuotaRequest request)
@@ -694,6 +723,12 @@ void QQuickWebEngineViewPrivate::widgetChanged(RenderWidgetHostViewQtDelegate *n
     bindViewAndWidget(q, static_cast<RenderWidgetHostViewQtDelegateQuick *>(newWidgetBase));
 }
 
+void QQuickWebEngineViewPrivate::findTextFinished(const QWebEngineFindTextResult &result)
+{
+    Q_Q(QQuickWebEngineView);
+    Q_EMIT q->findTextFinished(result);
+}
+
 WebEngineSettings *QQuickWebEngineViewPrivate::webEngineSettings() const
 {
     return m_settings->d_ptr.data();
@@ -705,34 +740,72 @@ const QObject *QQuickWebEngineViewPrivate::holdingQObject() const
     return q;
 }
 
+void QQuickWebEngineViewPrivate::lifecycleStateChanged(LifecycleState state)
+{
+    Q_Q(QQuickWebEngineView);
+    Q_EMIT q->lifecycleStateChanged(static_cast<QQuickWebEngineView::LifecycleState>(state));
+}
+
+void QQuickWebEngineViewPrivate::recommendedStateChanged(LifecycleState state)
+{
+    Q_Q(QQuickWebEngineView);
+    QTimer::singleShot(0, q, [q, state]() {
+        Q_EMIT q->recommendedStateChanged(static_cast<QQuickWebEngineView::LifecycleState>(state));
+    });
+}
+
+void QQuickWebEngineViewPrivate::visibleChanged(bool visible)
+{
+    Q_UNUSED(visible);
+}
+
 #ifndef QT_NO_ACCESSIBILITY
 QQuickWebEngineViewAccessible::QQuickWebEngineViewAccessible(QQuickWebEngineView *o)
     : QAccessibleObject(o)
 {}
 
+bool QQuickWebEngineViewAccessible::isValid() const
+{
+    if (!QAccessibleObject::isValid())
+        return false;
+
+    if (!engineView() || !engineView()->d_func())
+        return false;
+
+    return true;
+}
+
 QAccessibleInterface *QQuickWebEngineViewAccessible::parent() const
 {
     QQuickItem *parent = engineView()->parentItem();
-    return QAccessible::queryAccessibleInterface(parent);
+    QAccessibleInterface *iface = QAccessible::queryAccessibleInterface(parent);
+    if (!iface)
+        return QAccessible::queryAccessibleInterface(engineView()->window());
+    return iface;
+}
+
+QAccessibleInterface *QQuickWebEngineViewAccessible::focusChild() const
+{
+    if (child(0) && child(0)->focusChild())
+        return child(0)->focusChild();
+    return const_cast<QQuickWebEngineViewAccessible *>(this);
 }
 
 int QQuickWebEngineViewAccessible::childCount() const
 {
-    if (engineView() && child(0))
-        return 1;
-    return 0;
+    return child(0) ? 1 : 0;
 }
 
 QAccessibleInterface *QQuickWebEngineViewAccessible::child(int index) const
 {
-    if (index == 0)
+    if (index == 0 && isValid())
         return engineView()->d_func()->adapter->browserAccessible();
-    return 0;
+    return nullptr;
 }
 
 int QQuickWebEngineViewAccessible::indexOfChild(const QAccessibleInterface *c) const
 {
-    if (c == child(0))
+    if (child(0) && c == child(0))
         return 0;
     return -1;
 }
@@ -744,7 +817,7 @@ QString QQuickWebEngineViewAccessible::text(QAccessible::Text) const
 
 QAccessible::Role QQuickWebEngineViewAccessible::role() const
 {
-    return QAccessible::Document;
+    return QAccessible::Client;
 }
 
 QAccessible::State QQuickWebEngineViewAccessible::state() const
@@ -838,14 +911,17 @@ void QQuickWebEngineViewPrivate::initializationFinished()
         adapter->setWebChannel(m_webChannel, m_webChannelWorld);
 #endif
 
+    if (m_defaultAudioMuted != adapter->isAudioMuted())
+        adapter->setAudioMuted(m_defaultAudioMuted);
+
     if (devToolsView && devToolsView->d_ptr->adapter)
         adapter->openDevToolsFrontend(devToolsView->d_ptr->adapter);
 
     for (QQuickWebEngineScript *script : qAsConst(m_userScripts))
         script->d_func()->bind(profileAdapter()->userResourceController(), adapter.data());
 
-    if (q->window() && q->isVisible())
-        adapter->wasShown();
+    if (q->window())
+        adapter->setVisible(q->isVisible());
 
     if (!m_isBeingAdopted)
         return;
@@ -854,7 +930,7 @@ void QQuickWebEngineViewPrivate::initializationFinished()
     emit q->titleChanged();
     emit q->urlChanged();
     emit q->iconChanged();
-    QQuickWebEngineLoadRequest loadRequest(adapter->activeUrl(), QQuickWebEngineView::LoadSucceededStatus);
+    QQuickWebEngineLoadRequest loadRequest(m_url, QQuickWebEngineView::LoadSucceededStatus);
     emit q->loadingChanged(&loadRequest);
     emit q->loadProgressChanged();
 
@@ -905,10 +981,17 @@ void QQuickWebEngineViewPrivate::widgetChanged(RenderWidgetHostViewQtDelegateQui
 {
     Q_Q(QQuickWebEngineView);
 
-    if (oldWidget)
+    if (oldWidget) {
         oldWidget->setParentItem(nullptr);
+#if QT_CONFIG(accessibility)
+        QAccessible::deleteAccessibleInterface(QAccessible::uniqueId(QAccessible::queryAccessibleInterface(oldWidget)));
+#endif
+    }
 
     if (newWidget) {
+#if QT_CONFIG(accessibility)
+        QAccessible::registerAccessibleInterface(new QtWebEngineCore::RenderWidgetHostViewQtDelegateQuickAccessible(newWidget, q));
+#endif
         newWidget->setParentItem(q);
         newWidget->setSize(q->boundingRect().size());
         // Focus on creation if the view accepts it
@@ -944,12 +1027,14 @@ void QQuickWebEngineViewPrivate::updateAction(QQuickWebEngineView::WebAction act
         break;
     case QQuickWebEngineView::Cut:
     case QQuickWebEngineView::Copy:
+    case QQuickWebEngineView::Unselect:
+        enabled = adapter->hasFocusedFrame() && !adapter->selectedText().isEmpty();
+        break;
     case QQuickWebEngineView::Paste:
     case QQuickWebEngineView::Undo:
     case QQuickWebEngineView::Redo:
     case QQuickWebEngineView::SelectAll:
     case QQuickWebEngineView::PasteAndMatchStyle:
-    case QQuickWebEngineView::Unselect:
         enabled = adapter->hasFocusedFrame();
         break;
     default:
@@ -984,9 +1069,6 @@ void QQuickWebEngineViewPrivate::updateEditActions()
 QUrl QQuickWebEngineView::url() const
 {
     Q_D(const QQuickWebEngineView);
-    if (d->adapter->isInitialized())
-        return d->adapter->activeUrl();
-    else
         return d->m_url;
 }
 
@@ -996,13 +1078,15 @@ void QQuickWebEngineView::setUrl(const QUrl& url)
     if (url.isEmpty())
         return;
 
-    if (d->adapter->isInitialized()) {
-        d->adapter->load(url);
-        return;
+    if (d->m_url != url) {
+        d->m_url = url;
+        d->m_html.clear();
+        emit urlChanged();
     }
 
-    d->m_url = url;
-    d->m_html.clear();
+    if (d->adapter->isInitialized()) {
+        d->adapter->load(url);
+    }
 }
 
 QUrl QQuickWebEngineView::icon() const
@@ -1025,13 +1109,13 @@ void QQuickWebEngineView::loadHtml(const QString &html, const QUrl &baseUrl)
 void QQuickWebEngineView::goBack()
 {
     Q_D(QQuickWebEngineView);
-    d->adapter->navigateToOffset(-1);
+    d->adapter->navigateBack();
 }
 
 void QQuickWebEngineView::goForward()
 {
     Q_D(QQuickWebEngineView);
-    d->adapter->navigateToOffset(1);
+    d->adapter->navigateForward();
 }
 
 void QQuickWebEngineView::reload()
@@ -1114,7 +1198,6 @@ void QQuickWebEngineViewPrivate::updateAdapter()
 {
     // When the profile changes we need to create a new WebContentAdapter and reload the active URL.
     bool wasInitialized = adapter->isInitialized();
-    QUrl activeUrl = adapter->activeUrl();
     adapter = QSharedPointer<WebContentsAdapter>::create();
     adapter->setClient(this);
     if (wasInitialized) {
@@ -1122,8 +1205,6 @@ void QQuickWebEngineViewPrivate::updateAdapter()
             adapter->setContent(m_html.toUtf8(), defaultMimeType, m_url);
         else if (m_url.isValid())
             adapter->load(m_url);
-        else if (activeUrl.isValid())
-            adapter->load(activeUrl);
         else
             adapter->loadDefault();
     }
@@ -1156,14 +1237,6 @@ void QQuickWebEngineViewPrivate::didRunJavaScript(quint64 requestId, const QVari
     QJSValue callback = m_callbacks.take(requestId);
     QJSValueList args;
     args.append(qmlEngine(q)->toScriptValue(result));
-    callback.call(args);
-}
-
-void QQuickWebEngineViewPrivate::didFindText(quint64 requestId, int matchCount)
-{
-    QJSValue callback = m_callbacks.take(requestId);
-    QJSValueList args;
-    args.append(QJSValue(matchCount));
     callback.call(args);
 }
 
@@ -1237,7 +1310,13 @@ bool QQuickWebEngineViewPrivate::isEnabled() const
 
 void QQuickWebEngineViewPrivate::setToolTip(const QString &toolTipText)
 {
-    ui()->showToolTip(toolTipText);
+    Q_Q(QQuickWebEngineView);
+    QQuickWebEngineTooltipRequest *request = new QQuickWebEngineTooltipRequest(toolTipText, q);
+    // mark the object for gc by creating temporary jsvalue
+    qmlEngine(q)->newQObject(request);
+    Q_EMIT q->tooltipRequested(request);
+    if (!request->isAccepted())
+        ui()->showToolTip(toolTipText);
 }
 
 QtWebEngineCore::TouchHandleDrawableClient *QQuickWebEngineViewPrivate::createTouchHandle(const QMap<int, QImage> &images)
@@ -1355,15 +1434,18 @@ void QQuickWebEngineView::setBackgroundColor(const QColor &color)
 bool QQuickWebEngineView::isAudioMuted() const
 {
     const Q_D(QQuickWebEngineView);
-    return d->adapter->isAudioMuted();
+    if (d->adapter->isInitialized())
+        return d->adapter->isAudioMuted();
+    return d->m_defaultAudioMuted;
 }
 
 void QQuickWebEngineView::setAudioMuted(bool muted)
 {
     Q_D(QQuickWebEngineView);
-    bool wasAudioMuted = d->adapter->isAudioMuted();
+    bool wasAudioMuted = isAudioMuted();
+    d->m_defaultAudioMuted = muted;
     d->adapter->setAudioMuted(muted);
-    if (wasAudioMuted != d->adapter->isAudioMuted())
+    if (wasAudioMuted != isAudioMuted())
         Q_EMIT audioMutedChanged(muted);
 }
 
@@ -1371,6 +1453,12 @@ bool QQuickWebEngineView::recentlyAudible() const
 {
     const Q_D(QQuickWebEngineView);
     return d->adapter->recentlyAudible();
+}
+
+qint64 QQuickWebEngineView::renderProcessPid() const
+{
+    const Q_D(QQuickWebEngineView);
+    return d->adapter->renderProcessPid();
 }
 
 void QQuickWebEngineView::printToPdf(const QString& filePath, PrintedPageSizeId pageSizeId, PrintedPageOrientation orientation)
@@ -1432,18 +1520,8 @@ void QQuickWebEngineView::findText(const QString &subString, FindFlags options, 
     Q_D(QQuickWebEngineView);
     if (!d->adapter->isInitialized())
         return;
-    if (subString.isEmpty()) {
-        d->adapter->stopFinding();
-        if (!callback.isUndefined()) {
-            QJSValueList args;
-            args.append(QJSValue(0));
-            const_cast<QJSValue&>(callback).call(args);
-        }
-    } else {
-        quint64 requestId = d->adapter->findText(subString, options & FindCaseSensitively, options & FindBackward);
-        if (!callback.isUndefined())
-            d->m_callbacks.insert(requestId, callback);
-    }
+
+    d->adapter->findTextHelper()->startFinding(subString, options & FindCaseSensitively, options & FindBackward, callback);
 }
 
 QQuickWebEngineHistory *QQuickWebEngineView::navigationHistory() const
@@ -1570,9 +1648,6 @@ void QQuickWebEngineView::grantFeaturePermission(const QUrl &securityOrigin, QQu
     case MediaAudioVideoCapture:
         d_ptr->adapter->grantMediaAccessPermission(securityOrigin, WebContentsAdapterClient::MediaRequestFlags(WebContentsAdapterClient::MediaAudioCapture                                                                                                               | WebContentsAdapterClient::MediaVideoCapture));
         break;
-    case Geolocation:
-        d_ptr->adapter->runGeolocationRequestCallback(securityOrigin, granted);
-        break;
     case DesktopVideoCapture:
         d_ptr->adapter->grantMediaAccessPermission(securityOrigin, WebContentsAdapterClient::MediaDesktopVideoCapture);
         break;
@@ -1583,8 +1658,13 @@ void QQuickWebEngineView::grantFeaturePermission(const QUrl &securityOrigin, QQu
                 WebContentsAdapterClient::MediaDesktopAudioCapture |
                 WebContentsAdapterClient::MediaDesktopVideoCapture));
         break;
+    case Geolocation:
+        d_ptr->adapter->grantFeaturePermission(securityOrigin, ProfileAdapter::GeolocationPermission,
+                                               granted ? ProfileAdapter::AllowedPermission : ProfileAdapter::DeniedPermission);
+        break;
     case Notifications:
-        d_ptr->adapter->runUserNotificationRequestCallback(securityOrigin, granted);
+        d_ptr->adapter->grantFeaturePermission(securityOrigin, ProfileAdapter::NotificationPermission,
+                                               granted ? ProfileAdapter::AllowedPermission : ProfileAdapter::DeniedPermission);
         break;
     default:
         Q_UNREACHABLE();
@@ -1633,10 +1713,8 @@ void QQuickWebEngineView::itemChange(ItemChange change, const ItemChangeData &va
     Q_D(QQuickWebEngineView);
     if (d && d->profileInitialized() && d->adapter->isInitialized()
             && (change == ItemSceneChange || change == ItemVisibleHasChanged)) {
-        if (window() && isVisible())
-            d->adapter->wasShown();
-        else
-            d->adapter->wasHidden();
+        if (window())
+            d->adapter->setVisible(isVisible());
     }
     QQuickItem::itemChange(change, value);
 }
@@ -1686,10 +1764,10 @@ void QQuickWebEngineView::triggerWebAction(WebAction action)
     Q_D(QQuickWebEngineView);
     switch (action) {
     case Back:
-        d->adapter->navigateToOffset(-1);
+        d->adapter->navigateBack();
         break;
     case Forward:
-        d->adapter->navigateToOffset(1);
+        d->adapter->navigateForward();
         break;
     case Stop:
         d->adapter->stop();
@@ -1749,10 +1827,14 @@ void QQuickWebEngineView::triggerWebAction(WebAction action)
     case CopyLinkToClipboard:
         if (!d->m_contextMenuData.unfilteredLinkUrl().isEmpty()) {
             QString urlString = d->m_contextMenuData.unfilteredLinkUrl().toString(QUrl::FullyEncoded);
-            QString title = d->m_contextMenuData.linkText().toHtmlEscaped();
+            QString linkText = d->m_contextMenuData.linkText().toHtmlEscaped();
+            QString title = d->m_contextMenuData.titleText();
+            if (!title.isEmpty())
+                title = QStringLiteral(" title=\"%1\"").arg(title.toHtmlEscaped());
             QMimeData *data = new QMimeData();
             data->setText(urlString);
-            QString html = QStringLiteral("<a href=\"") + urlString + QStringLiteral("\">") + title + QStringLiteral("</a>");
+            QString html = QStringLiteral("<a href=\"") + urlString + QStringLiteral("\"") + title + QStringLiteral(">")
+                         + linkText + QStringLiteral("</a>");
             data->setHtml(html);
             data->setUrls(QList<QUrl>() << d->m_contextMenuData.unfilteredLinkUrl());
             qApp->clipboard()->setMimeData(data);
@@ -1774,12 +1856,15 @@ void QQuickWebEngineView::triggerWebAction(WebAction action)
     case CopyImageUrlToClipboard:
         if (d->m_contextMenuData.mediaUrl().isValid() && d->m_contextMenuData.mediaType() == WebEngineContextMenuData::MediaTypeImage) {
             QString urlString = d->m_contextMenuData.mediaUrl().toString(QUrl::FullyEncoded);
-            QString title = d->m_contextMenuData.linkText();
+            QString alt = d->m_contextMenuData.altText();
+            if (!alt.isEmpty())
+                alt = QStringLiteral(" alt=\"%1\"").arg(alt.toHtmlEscaped());
+            QString title = d->m_contextMenuData.titleText();
             if (!title.isEmpty())
-                title = QStringLiteral(" alt=\"%1\"").arg(title.toHtmlEscaped());
+                title = QStringLiteral(" title=\"%1\"").arg(title.toHtmlEscaped());
             QMimeData *data = new QMimeData();
             data->setText(urlString);
-            QString html = QStringLiteral("<img src=\"") + urlString + QStringLiteral("\"") + title + QStringLiteral("></img>");
+            QString html = QStringLiteral("<img src=\"") + urlString + QStringLiteral("\"") + title + alt + QStringLiteral("></img>");
             data->setHtml(html);
             data->setUrls(QList<QUrl>() << d->m_contextMenuData.mediaUrl());
             qApp->clipboard()->setMimeData(data);
@@ -1797,12 +1882,17 @@ void QQuickWebEngineView::triggerWebAction(WebAction action)
                  d->m_contextMenuData.mediaType() == WebEngineContextMenuData::MediaTypeVideo))
         {
             QString urlString = d->m_contextMenuData.mediaUrl().toString(QUrl::FullyEncoded);
+            QString title = d->m_contextMenuData.titleText();
+            if (!title.isEmpty())
+                title = QStringLiteral(" title=\"%1\"").arg(title.toHtmlEscaped());
             QMimeData *data = new QMimeData();
             data->setText(urlString);
             if (d->m_contextMenuData.mediaType() == WebEngineContextMenuData::MediaTypeAudio)
-                data->setHtml(QStringLiteral("<audio src=\"") + urlString + QStringLiteral("\"></audio>"));
+                data->setHtml(QStringLiteral("<audio src=\"") + urlString + QStringLiteral("\"") + title +
+                              QStringLiteral("></audio>"));
             else
-                data->setHtml(QStringLiteral("<video src=\"") + urlString + QStringLiteral("\"></video>"));
+                data->setHtml(QStringLiteral("<video src=\"") + urlString + QStringLiteral("\"") + title +
+                              QStringLiteral("></video>"));
             data->setUrls(QList<QUrl>() << d->m_contextMenuData.mediaUrl());
             qApp->clipboard()->setMimeData(data);
         }
@@ -2146,6 +2236,24 @@ void QQuickWebEngineView::lazyInitialize()
 {
     Q_D(QQuickWebEngineView);
     d->ensureContentsAdapter();
+}
+
+QQuickWebEngineView::LifecycleState QQuickWebEngineView::lifecycleState() const
+{
+    Q_D(const QQuickWebEngineView);
+    return static_cast<LifecycleState>(d->adapter->lifecycleState());
+}
+
+void QQuickWebEngineView::setLifecycleState(LifecycleState state)
+{
+    Q_D(QQuickWebEngineView);
+    d->adapter->setLifecycleState(static_cast<WebContentsAdapterClient::LifecycleState>(state));
+}
+
+QQuickWebEngineView::LifecycleState QQuickWebEngineView::recommendedState() const
+{
+    Q_D(const QQuickWebEngineView);
+    return static_cast<LifecycleState>(d->adapter->recommendedState());
 }
 
 QQuickWebEngineFullScreenRequest::QQuickWebEngineFullScreenRequest()
