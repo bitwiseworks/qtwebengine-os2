@@ -53,9 +53,7 @@ public:
     ~ContentUtilityClientQt() override;
 
     // content::ContentUtilityClient:
-    bool HandleServiceRequest(const std::string &service_name,
-                              service_manager::mojom::ServiceRequest request) override;
-
+    mojo::ServiceFactory *GetIOThreadServiceFactory() override;
 };
 
 } // namespace

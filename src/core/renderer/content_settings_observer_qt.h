@@ -51,7 +51,6 @@
 #include "url/gurl.h"
 
 namespace blink {
-class WebContentSettingCallbacks;
 class WebSecurityOrigin;
 }
 
@@ -59,28 +58,24 @@ namespace QtWebEngineCore {
 
 // Handles blocking content per content settings for each RenderFrame.
 class ContentSettingsObserverQt
-        : public content::RenderFrameObserver
-        , public content::RenderFrameObserverTracker<ContentSettingsObserverQt>
-        , public blink::WebContentSettingsClient
+    : public content::RenderFrameObserver
+    , public content::RenderFrameObserverTracker<ContentSettingsObserverQt>
+    , public blink::WebContentSettingsClient
 {
 public:
     ContentSettingsObserverQt(content::RenderFrame *render_frame);
     ~ContentSettingsObserverQt() override;
 
     // blink::WebContentSettingsClient:
-    bool AllowDatabase(const blink::WebString &name,
-                       const blink::WebString &display_name,
-                       unsigned estimated_size) override;
-    void RequestFileSystemAccessAsync(const blink::WebContentSettingCallbacks &callbacks) override;
-    bool AllowIndexedDB(const blink::WebSecurityOrigin &origin) override;
+    bool AllowDatabase() override;
+    void RequestFileSystemAccessAsync(base::OnceCallback<void(bool)> callback) override;
+    bool AllowIndexedDB() override;
     bool AllowStorage(bool local) override;
 
 private:
-
     // RenderFrameObserver implementation:
     bool OnMessageReceived(const IPC::Message &message) override;
-    void DidCommitProvisionalLoad(bool is_same_document_navigation,
-                                  ui::PageTransition transition) override;
+    void DidCommitProvisionalLoad(bool is_same_document_navigation, ui::PageTransition transition) override;
     void OnDestruct() override;
 
     // Message handlers.
@@ -94,11 +89,11 @@ private:
     base::flat_map<StoragePermissionsKey, bool> m_cachedStoragePermissions;
 
     int m_currentRequestId;
-    base::flat_map<int, blink::WebContentSettingCallbacks> m_permissionRequests;
+    base::flat_map<int, base::OnceCallback<void(bool)>> m_permissionRequests;
 
     DISALLOW_COPY_AND_ASSIGN(ContentSettingsObserverQt);
 };
 
 } // namespace QtWebEngineCore
 
-#endif  // RENDERER_CONTENT_SETTINGS_OBSERVER_QT_H
+#endif // RENDERER_CONTENT_SETTINGS_OBSERVER_QT_H

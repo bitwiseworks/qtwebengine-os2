@@ -62,6 +62,7 @@ class QWebChannel;
 class QWebEngineCertificateError;
 class QWebEngineClientCertificateSelection;
 class QWebEngineContextMenuData;
+class QWebEngineFindTextResult;
 class QWebEngineFullScreenRequest;
 class QWebEngineHistory;
 class QWebEnginePage;
@@ -88,6 +89,10 @@ class QWEBENGINEWIDGETS_EXPORT QWebEnginePage : public QObject {
     Q_PROPERTY(QPointF scrollPosition READ scrollPosition NOTIFY scrollPositionChanged)
     Q_PROPERTY(bool audioMuted READ isAudioMuted WRITE setAudioMuted NOTIFY audioMutedChanged)
     Q_PROPERTY(bool recentlyAudible READ recentlyAudible NOTIFY recentlyAudibleChanged)
+    Q_PROPERTY(bool visible READ isVisible WRITE setVisible NOTIFY visibleChanged)
+    Q_PROPERTY(LifecycleState lifecycleState READ lifecycleState WRITE setLifecycleState NOTIFY lifecycleStateChanged)
+    Q_PROPERTY(LifecycleState recommendedState READ recommendedState NOTIFY recommendedStateChanged)
+    Q_PROPERTY(qint64 renderProcessPid READ renderProcessPid NOTIFY renderProcessPidChanged)
 
 public:
     enum WebAction {
@@ -180,7 +185,8 @@ public:
         NavigationTypeFormSubmitted,
         NavigationTypeBackForward,
         NavigationTypeReload,
-        NavigationTypeOther
+        NavigationTypeOther,
+        NavigationTypeRedirect,
     };
     Q_ENUM(NavigationType)
 
@@ -221,6 +227,14 @@ public:
     };
     Q_ENUM(RenderProcessTerminationStatus)
 
+    // must match WebContentsAdapterClient::LifecycleState
+    enum class LifecycleState {
+        Active,
+        Frozen,
+        Discarded,
+    };
+    Q_ENUM(LifecycleState)
+
     explicit QWebEnginePage(QObject *parent = Q_NULLPTR);
     QWebEnginePage(QWebEngineProfile *profile, QObject *parent = Q_NULLPTR);
     ~QWebEnginePage();
@@ -241,7 +255,7 @@ public:
 
     void replaceMisspelledWord(const QString &replacement);
 
-    virtual bool event(QEvent*);
+    bool event(QEvent*) override;
 
     void findText(const QString &subString, FindFlags options = FindFlags(), const QWebEngineCallback<bool> &resultCallback = QWebEngineCallback<bool>());
 
@@ -292,6 +306,7 @@ public:
     bool isAudioMuted() const;
     void setAudioMuted(bool muted);
     bool recentlyAudible() const;
+    qint64 renderProcessPid() const;
 
     void printToPdf(const QString &filePath, const QPageLayout &layout = QPageLayout(QPageSize(QPageSize::A4), QPageLayout::Portrait, QMarginsF()));
     void printToPdf(const QWebEngineCallback<const QByteArray&> &resultCallback, const QPageLayout &layout = QPageLayout(QPageSize(QPageSize::A4), QPageLayout::Portrait, QMarginsF()));
@@ -305,6 +320,14 @@ public:
     void setUrlRequestInterceptor(QWebEngineUrlRequestInterceptor *interceptor);
 
     const QWebEngineContextMenuData &contextMenuData() const;
+
+    LifecycleState lifecycleState() const;
+    void setLifecycleState(LifecycleState state);
+
+    LifecycleState recommendedState() const;
+
+    bool isVisible() const;
+    void setVisible(bool visible);
 
 Q_SIGNALS:
     void loadStarted();
@@ -340,9 +363,17 @@ Q_SIGNALS:
     void contentsSizeChanged(const QSizeF &size);
     void audioMutedChanged(bool muted);
     void recentlyAudibleChanged(bool recentlyAudible);
+    void renderProcessPidChanged(qint64 pid);
 
     void pdfPrintingFinished(const QString &filePath, bool success);
     void printRequested();
+
+    void visibleChanged(bool visible);
+
+    void lifecycleStateChanged(LifecycleState state);
+    void recommendedStateChanged(LifecycleState state);
+
+    void findTextFinished(const QWebEngineFindTextResult &result);
 
 protected:
     virtual QWebEnginePage *createWindow(WebWindowType type);

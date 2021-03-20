@@ -118,8 +118,19 @@ public:
     qint64 receivedBytes() const;
     QUrl url() const;
     QString mimeType() const;
+#if QT_DEPRECATED_SINCE(5, 14)
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+    QT_DEPRECATED_VERSION_X(5, 14, "Use downloadDirectory() and downloadFileName() instead")
     QString path() const;
+    QT_DEPRECATED_VERSION_X(5, 14, "Use setDownloadDirectory() and setDownloadFileName() instead")
     void setPath(QString path);
+#else
+    QT_DEPRECATED_X("Use downloadDirectory() and downloadFileName() instead")
+    QString path() const;
+    QT_DEPRECATED_X("Use setDownloadDirectory() and setDownloadFileName() instead")
+    void setPath(QString path);
+#endif
+#endif
     bool isFinished() const;
     bool isPaused() const;
     SavePageFormat savePageFormat() const;
@@ -128,6 +139,11 @@ public:
     DownloadInterruptReason interruptReason() const;
     QString interruptReasonString() const;
     bool isSavePageDownload() const;
+    QString suggestedFileName() const;
+    QString downloadDirectory() const;
+    void setDownloadDirectory(const QString &directory);
+    QString downloadFileName() const;
+    void setDownloadFileName(const QString &fileName);
 
     QWebEnginePage *page() const;
 

@@ -63,7 +63,7 @@
 #if defined(OS_WIN)
 #include "ozone/gl_surface_wgl_qt.h"
 
-#include "gpu/ipc/service/direct_composition_surface_win.h"
+#include "ui/gl/direct_composition_surface_win.h"
 #include "ui/gl/vsync_provider_win.h"
 #endif
 
@@ -76,9 +76,9 @@ namespace {
 bool g_initializedEGL = false;
 }
 
-void* GLSurfaceQt::g_display = NULL;
-void* GLSurfaceQt::g_config = NULL;
-const char* GLSurfaceQt::g_extensions = NULL;
+void* GLSurfaceQt::g_display = nullptr;
+void* GLSurfaceQt::g_config = nullptr;
+const char* GLSurfaceQt::g_extensions = nullptr;
 
 GLSurfaceQt::~GLSurfaceQt()
 {
@@ -107,7 +107,7 @@ bool GLSurfaceQt::IsOffscreen()
     return true;
 }
 
-gfx::SwapResult GLSurfaceQt::SwapBuffers(const PresentationCallback &callback)
+gfx::SwapResult GLSurfaceQt::SwapBuffers(PresentationCallback callback)
 {
     LOG(ERROR) << "Attempted to call SwapBuffers on a pbuffer.";
     Q_UNREACHABLE();
@@ -140,7 +140,7 @@ bool InitializeGLOneOffPlatform()
 {
     VSyncProviderWin::InitializeOneOff();
 
-    if (GetGLImplementation() == kGLImplementationEGLGLES2)
+    if (GetGLImplementation() == kGLImplementationEGLGLES2 || GetGLImplementation() == kGLImplementationEGLANGLE)
         return GLSurfaceEGLQt::InitializeOneOff();
 
     if (GetGLImplementation() == kGLImplementationDesktopGL) {
@@ -173,6 +173,7 @@ CreateOffscreenGLSurfaceWithFormat(const gfx::Size& size, GLSurfaceFormat format
             return surface;
         break;
     }
+    case kGLImplementationEGLANGLE:
     case kGLImplementationEGLGLES2: {
         surface = new GLSurfaceEGLQt(size);
         if (surface->Initialize(format))
@@ -195,14 +196,14 @@ CreateOffscreenGLSurfaceWithFormat(const gfx::Size& size, GLSurfaceFormat format
     }
     LOG(ERROR) << "Requested OpenGL implementation is not supported. Implementation: " << GetGLImplementation();
     Q_UNREACHABLE();
-    return NULL;
+    return nullptr;
 }
 
 scoped_refptr<GLSurface>
 CreateViewGLSurface(gfx::AcceleratedWidget window)
 {
     QT_NOT_USED
-    return NULL;
+    return nullptr;
 }
 
 } // namespace init
@@ -219,11 +220,40 @@ scoped_refptr<gl::GLSurface> ImageTransportSurface::CreateNativeSurface(base::We
     QT_NOT_USED
     return scoped_refptr<gl::GLSurface>();
 }
+} // namespace gpu
+
+namespace gl {
+
+bool DirectCompositionSurfaceWin::IsDirectCompositionSupported()
+{
+    return false;
+}
+
+bool DirectCompositionSurfaceWin::IsDecodeSwapChainSupported()
+{
+    return false;
+}
 
 bool DirectCompositionSurfaceWin::IsHDRSupported()
 {
     return false;
 }
-} // namespace gpu
+
+bool DirectCompositionSurfaceWin::IsSwapChainTearingSupported()
+{
+    return false;
+}
+
+bool DirectCompositionSurfaceWin::AreOverlaysSupported()
+{
+    return false;
+}
+
+UINT DirectCompositionSurfaceWin::GetOverlaySupportFlags(DXGI_FORMAT format)
+{
+    Q_UNUSED(format);
+    return 0;
+}
+} // namespace gl
 #endif
 #endif // !defined(OS_MACOSX) && !defined(OS_OS2)

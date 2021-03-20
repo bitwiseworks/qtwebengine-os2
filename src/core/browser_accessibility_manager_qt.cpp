@@ -51,24 +51,24 @@ BrowserAccessibilityManager* BrowserAccessibilityManager::Create(
       BrowserAccessibilityDelegate* delegate,
       BrowserAccessibilityFactory* factory)
 {
-#ifndef QT_NO_ACCESSIBILITY
+#if QT_CONFIG(accessibility)
     return new BrowserAccessibilityManagerQt(nullptr, initialTree, delegate, factory);
 #else
     delete factory;
     return nullptr;
-#endif // QT_NO_ACCESSIBILITY
+#endif // QT_CONFIG(accessibility)
 }
 
 BrowserAccessibility *BrowserAccessibility::Create()
 {
-#ifndef QT_NO_ACCESSIBILITY
+#if QT_CONFIG(accessibility)
     return new BrowserAccessibilityQt();
 #else
     return nullptr;
-#endif // QT_NO_ACCESSIBILITY
+#endif // QT_CONFIG(accessibility)
 }
 
-#ifndef QT_NO_ACCESSIBILITY
+#if QT_CONFIG(accessibility)
 BrowserAccessibilityManagerQt::BrowserAccessibilityManagerQt(
     QObject *parentObject, const ui::AXTreeUpdate &initialTree,
     BrowserAccessibilityDelegate* delegate, BrowserAccessibilityFactory* factory)
@@ -146,6 +146,24 @@ void BrowserAccessibilityManagerQt::FireBlinkEvent(ax::mojom::Event event_type,
         break;
     }
 }
-#endif // QT_NO_ACCESSIBILITY
+
+void BrowserAccessibilityManagerQt::FireGeneratedEvent(ui::AXEventGenerator::Event event_type,
+                                                       BrowserAccessibility* node)
+{
+    BrowserAccessibilityQt *iface = static_cast<BrowserAccessibilityQt*>(node);
+
+    switch (event_type) {
+    case ui::AXEventGenerator::Event::VALUE_CHANGED:
+        if (iface->role() == QAccessible::EditableText) {
+            QAccessibleTextUpdateEvent event(iface, -1, QString(), QString());
+            QAccessible::updateAccessibility(&event);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+#endif // QT_CONFIG(accessibility)
 
 }

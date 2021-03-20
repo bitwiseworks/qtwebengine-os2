@@ -43,6 +43,7 @@
 
 #include "base/callback.h"
 #include "content/public/browser/notification_event_dispatcher.h"
+#include "third_party/blink/public/mojom/notifications/notification.mojom-shared.h"
 #include "third_party/blink/public/common/notifications/notification_resources.h"
 #include "third_party/blink/public/common/notifications/platform_notification_data.h"
 #include "ui/message_center/public/cpp/notification_delegate.h"
@@ -51,14 +52,14 @@
 
 namespace QtWebEngineCore {
 
-static Qt::LayoutDirection toDirection(blink::PlatformNotificationData::Direction direction)
+static Qt::LayoutDirection toDirection(blink::mojom::NotificationDirection direction)
 {
     switch (direction) {
-        case blink::PlatformNotificationData::DIRECTION_LEFT_TO_RIGHT:
+        case blink::mojom::NotificationDirection::LEFT_TO_RIGHT:
             return Qt::LeftToRight;
-        case blink::PlatformNotificationData::DIRECTION_RIGHT_TO_LEFT:
+        case blink::mojom::NotificationDirection::RIGHT_TO_LEFT:
             return Qt::RightToLeft;
-        case blink::PlatformNotificationData::DIRECTION_AUTO:
+        case blink::mojom::NotificationDirection::AUTO:
         default:
             break;
     }

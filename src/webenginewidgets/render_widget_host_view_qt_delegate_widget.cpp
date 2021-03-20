@@ -41,6 +41,7 @@
 
 #include "qwebenginepage_p.h"
 #include "qwebengineview.h"
+#include "qwebengineview_p.h"
 #include <QGuiApplication>
 #include <QLayout>
 #include <QMouseEvent>
@@ -106,7 +107,7 @@ RenderWidgetHostViewQtDelegateWidget::RenderWidgetHostViewQtDelegateWidget(Rende
     format.setDepthBufferSize(24);
     format.setStencilBufferSize(8);
 
-#ifndef QT_NO_OPENGL
+#if QT_CONFIG(opengl)
     QOpenGLContext *globalSharedContext = QOpenGLContext::globalShareContext();
     if (globalSharedContext) {
         QSurfaceFormat sharedFormat = globalSharedContext->format();
@@ -301,12 +302,6 @@ QSGLayer *RenderWidgetHostViewQtDelegateWidget::createLayer()
     return renderContext->sceneGraphContext()->createLayer(renderContext);
 }
 
-QSGInternalImageNode *RenderWidgetHostViewQtDelegateWidget::createInternalImageNode()
-{
-    QSGRenderContext *renderContext = QQuickWindowPrivate::get(quickWindow())->context;
-    return renderContext->sceneGraphContext()->createInternalImageNode();
-}
-
 QSGImageNode *RenderWidgetHostViewQtDelegateWidget::createImageNode()
 {
     return quickWindow()->createImageNode();
@@ -479,14 +474,60 @@ bool RenderWidgetHostViewQtDelegateWidget::event(QEvent *event)
 
     if (!handled)
         return QQuickWidget::event(event);
-    // Most events are accepted by default, but tablet events are not:
     event->accept();
     return true;
+}
+
+void RenderWidgetHostViewQtDelegateWidget::unhandledWheelEvent(QWheelEvent *ev)
+{
+    if (QWidget *p = parentWidget())
+        qApp->sendEvent(p, ev);
 }
 
 void RenderWidgetHostViewQtDelegateWidget::onWindowPosChanged()
 {
     m_client->visualPropertiesChanged();
 }
+
+#if QT_CONFIG(accessibility)
+RenderWidgetHostViewQtDelegateWidgetAccessible::RenderWidgetHostViewQtDelegateWidgetAccessible(RenderWidgetHostViewQtDelegateWidget *o, QWebEngineView *view)
+    : QAccessibleWidget(o)
+    , m_view(view)
+{
+}
+
+bool RenderWidgetHostViewQtDelegateWidgetAccessible::isValid() const
+{
+    if (!viewAccessible() || !viewAccessible()->isValid())
+        return false;
+
+    return QAccessibleWidget::isValid();
+}
+
+QAccessibleInterface *RenderWidgetHostViewQtDelegateWidgetAccessible::focusChild() const
+{
+    return viewAccessible()->focusChild();
+}
+
+int RenderWidgetHostViewQtDelegateWidgetAccessible::childCount() const
+{
+    return viewAccessible()->childCount();
+}
+
+QAccessibleInterface *RenderWidgetHostViewQtDelegateWidgetAccessible::child(int index) const
+{
+    return viewAccessible()->child(index);
+}
+
+int RenderWidgetHostViewQtDelegateWidgetAccessible::indexOfChild(const QAccessibleInterface *c) const
+{
+    return viewAccessible()->indexOfChild(c);
+}
+
+QWebEngineViewAccessible *RenderWidgetHostViewQtDelegateWidgetAccessible::viewAccessible() const
+{
+    return static_cast<QWebEngineViewAccessible *>(QAccessible::queryAccessibleInterface(m_view));
+}
+#endif // QT_CONFIG(accessibility)
 
 } // namespace QtWebEngineCore

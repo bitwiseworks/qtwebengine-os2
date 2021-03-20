@@ -70,14 +70,15 @@ class QWebEngineUrlRequestInfoPrivate {
 public:
     QWebEngineUrlRequestInfoPrivate(QWebEngineUrlRequestInfo::ResourceType resource,
                                     QWebEngineUrlRequestInfo::NavigationType navigation, const QUrl &u, const QUrl &fpu,
-                                    const QByteArray &m);
+                                    const QUrl &i, const QByteArray &m);
 
     QWebEngineUrlRequestInfo::ResourceType resourceType;
     QWebEngineUrlRequestInfo::NavigationType navigationType;
     bool shouldBlockRequest;
-
+    bool shouldRedirectRequest;
     QUrl url;
     QUrl firstPartyUrl;
+    QUrl initiator;
     const QByteArray method;
     bool changed;
     QHash<QByteArray, QByteArray> extraHeaders;

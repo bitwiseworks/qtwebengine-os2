@@ -52,17 +52,18 @@
 
 namespace content {
 
-#ifndef QT_NO_ACCESSIBILITY
+#if QT_CONFIG(accessibility)
 class AccessibilityTreeFormatterQt : public AccessibilityTreeFormatterBrowser {
 public:
     explicit AccessibilityTreeFormatterQt();
     ~AccessibilityTreeFormatterQt() override;
 
 private:
-    const base::FilePath::StringType GetExpectedFileSuffix() override;
+    base::FilePath::StringType GetExpectedFileSuffix() override;
     const std::string GetAllowEmptyString() override;
     const std::string GetAllowString() override;
     const std::string GetDenyString() override;
+    const std::string GetDenyNodeString() override;
     void AddProperties(const BrowserAccessibility &node, base::DictionaryValue* dict) override;
     base::string16 ProcessTreeForOutput(const base::DictionaryValue &node, base::DictionaryValue * = nullptr) override;
 };
@@ -178,7 +179,7 @@ base::string16 AccessibilityTreeFormatterQt::ProcessTreeForOutput(const base::Di
     return line + base::ASCIIToUTF16("\n");
 }
 
-const base::FilePath::StringType AccessibilityTreeFormatterQt::GetExpectedFileSuffix()
+base::FilePath::StringType AccessibilityTreeFormatterQt::GetExpectedFileSuffix()
 {
     return FILE_PATH_LITERAL("-expected-qt.txt");
 }
@@ -198,12 +199,17 @@ const std::string AccessibilityTreeFormatterQt::GetDenyString()
     return "@QT-DENY:";
 }
 
-#endif // QT_NO_ACCESSIBILITY
+const std::string AccessibilityTreeFormatterQt::GetDenyNodeString()
+{
+    return "@QT-DENY-NODE:";
+}
+
+#endif // QT_CONFIG(accessibility)
 
 // static
 std::unique_ptr<AccessibilityTreeFormatter> AccessibilityTreeFormatter::Create()
 {
-#ifndef QT_NO_ACCESSIBILITY
+#if QT_CONFIG(accessibility)
     return std::unique_ptr<AccessibilityTreeFormatter>(new AccessibilityTreeFormatterQt());
 #else
     return nullptr;

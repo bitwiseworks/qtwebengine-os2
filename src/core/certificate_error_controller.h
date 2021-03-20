@@ -55,6 +55,7 @@
 
 #include <QtCore/QDateTime>
 #include <QtCore/QUrl>
+#include <QtNetwork/QSslCertificate>
 
 QT_BEGIN_NAMESPACE
 
@@ -84,8 +85,9 @@ public:
         CertificateValidityTooLong = -213,
         CertificateTransparencyRequired = -214,
         CertificateSymantecLegacy = -215,
-
-        CertificateErrorEnd = -216 // not an error, just an enum boundary
+        CertificateKnownInterceptionBlocked = -217,
+        SslObsoleteVersion = -218,
+        CertificateErrorEnd = -219 // not an error, just an enum boundary
     };
 
     CertificateError error() const;
@@ -95,6 +97,7 @@ public:
     QString errorString() const;
     QDateTime validStart() const;
     QDateTime validExpiry() const;
+    QList<QSslCertificate> certificateChain() const;
 
     void accept(bool);
 

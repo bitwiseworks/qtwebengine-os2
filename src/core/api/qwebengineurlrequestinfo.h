@@ -46,6 +46,7 @@
 #include <QtCore/qurl.h>
 
 namespace QtWebEngineCore {
+class InterceptedRequest;
 class NetworkDelegateQt;
 class URLRequestNotification;
 } // namespace QtWebEngineCore
@@ -76,8 +77,10 @@ public:
         ResourceTypeServiceWorker,  // the main resource of a service worker.
         ResourceTypeCspReport,      // Content Security Policy (CSP) violation report
         ResourceTypePluginResource, // A resource requested by a plugin
+        ResourceTypeNavigationPreloadMainFrame = 19, // A main-frame service worker navigation preload request
+        ResourceTypeNavigationPreloadSubFrame,  // A sub-frame service worker navigation preload request
 #ifndef Q_QDOC
-        ResourceTypeLast,
+        ResourceTypeLast = ResourceTypeNavigationPreloadSubFrame,
 #endif
         ResourceTypeUnknown = 255
     };
@@ -88,7 +91,8 @@ public:
         NavigationTypeFormSubmitted,
         NavigationTypeBackForward,
         NavigationTypeReload,
-        NavigationTypeOther
+        NavigationTypeOther,
+        NavigationTypeRedirect,
     };
 
     ResourceType resourceType() const;
@@ -96,6 +100,7 @@ public:
 
     QUrl requestUrl() const;
     QUrl firstPartyUrl() const;
+    QUrl initiator() const;
     QByteArray requestMethod() const;
     bool changed() const;
 
@@ -106,13 +111,16 @@ public:
 private:
     friend class QtWebEngineCore::NetworkDelegateQt;
     friend class QtWebEngineCore::URLRequestNotification;
+    friend class QtWebEngineCore::InterceptedRequest;
     Q_DISABLE_COPY(QWebEngineUrlRequestInfo)
     Q_DECLARE_PRIVATE(QWebEngineUrlRequestInfo)
 
     void resetChanged();
 
+    QWebEngineUrlRequestInfo();
     QWebEngineUrlRequestInfo(QWebEngineUrlRequestInfoPrivate *p);
     QWebEngineUrlRequestInfo(QWebEngineUrlRequestInfo &&p);
+    QWebEngineUrlRequestInfo &operator=(QWebEngineUrlRequestInfo &&p);
     ~QWebEngineUrlRequestInfo();
     QScopedPointer<QWebEngineUrlRequestInfoPrivate> d_ptr;
 };

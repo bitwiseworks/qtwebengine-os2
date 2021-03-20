@@ -44,7 +44,9 @@
 #include "base/task/post_task.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "mojo/public/cpp/bindings/binding.h"
 #include "net/cookies/cookie_util.h"
+#include "services/network/public/mojom/cookie_manager.mojom.h"
 
 #include "api/qwebenginecookiestore.h"
 #include "api/qwebenginecookiestore_p.h"
@@ -52,51 +54,81 @@
 
 namespace QtWebEngineCore {
 
-static GURL sourceUrlForCookie(const QNetworkCookie &cookie) {
+class CookieChangeListener : public network::mojom::CookieChangeListener
+{
+public:
+    CookieChangeListener(CookieMonsterDelegateQt *delegate) : m_delegate(delegate) { }
+    ~CookieChangeListener() override = default;
+
+    // network::mojom::CookieChangeListener:
+    void OnCookieChange(const net::CookieChangeInfo &change) override
+    {
+        m_delegate->OnCookieChanged(change);
+    }
+
+private:
+    CookieMonsterDelegateQt *m_delegate;
+
+    DISALLOW_COPY_AND_ASSIGN(CookieChangeListener);
+};
+
+class CookieAccessFilter : public network::mojom::CookieRemoteAccessFilter
+{
+public:
+    CookieAccessFilter(CookieMonsterDelegateQt *delegate) : m_delegate(delegate) { }
+    ~CookieAccessFilter() override = default;
+
+    void AllowedAccess(const GURL &url, const net::SiteForCookies &site_for_cookies, AllowedAccessCallback callback) override
+    {
+        bool allow = m_delegate->canGetCookies(toQt(site_for_cookies.RepresentativeUrl()), toQt(url));
+        std::move(callback).Run(allow);
+    }
+
+private:
+    CookieMonsterDelegateQt *m_delegate;
+
+    DISALLOW_COPY_AND_ASSIGN(CookieAccessFilter);
+};
+
+
+static GURL sourceUrlForCookie(const QNetworkCookie &cookie)
+{
     QString urlFragment = QStringLiteral("%1%2").arg(cookie.domain()).arg(cookie.path());
     return net::cookie_util::CookieOriginToURL(urlFragment.toStdString(), /* is_https */ cookie.isSecure());
 }
 
 CookieMonsterDelegateQt::CookieMonsterDelegateQt()
-    : m_client(0)
-    , m_cookieMonster(nullptr)
+    : m_client(nullptr)
+    , m_listener(new CookieChangeListener(this))
+    , m_filter(new CookieAccessFilter(this))
+    , m_receiver(m_listener.get())
+    , m_filterReceiver(m_filter.get())
+    , m_hasFilter(false)
 {
 }
 
 CookieMonsterDelegateQt::~CookieMonsterDelegateQt()
 {
-
 }
 
 void CookieMonsterDelegateQt::AddStore(net::CookieStore *store)
 {
-    std::unique_ptr<net::CookieChangeSubscription> sub =
-        store->GetChangeDispatcher().AddCallbackForAllChanges(
-            base::Bind(&CookieMonsterDelegateQt::OnCookieChanged,
-                        // this object's destruction will deregister the subscription.
-                        base::Unretained(this)));
+    std::unique_ptr<net::CookieChangeSubscription> sub = store->GetChangeDispatcher().AddCallbackForAllChanges(
+            base::BindRepeating(&CookieMonsterDelegateQt::OnCookieChanged,
+                                // this object's destruction will deregister the subscription.
+                                base::Unretained(this)));
 
     m_subscriptions.push_back(std::move(sub));
 }
 
 bool CookieMonsterDelegateQt::hasCookieMonster()
 {
-    return m_cookieMonster;
+    return m_mojoCookieManager.is_bound();
 }
 
 void CookieMonsterDelegateQt::getAllCookies(quint64 callbackId)
 {
-    net::CookieMonster::GetCookieListCallback callback =
-        base::BindOnce(&CookieMonsterDelegateQt::GetAllCookiesCallbackOnIOThread, this, callbackId);
-
-    base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::IO},
-                             base::BindOnce(&CookieMonsterDelegateQt::GetAllCookiesOnIOThread, this, std::move(callback)));
-}
-
-void CookieMonsterDelegateQt::GetAllCookiesOnIOThread(net::CookieMonster::GetCookieListCallback callback)
-{
-    if (m_cookieMonster)
-        m_cookieMonster->GetAllCookiesAsync(std::move(callback));
+    m_mojoCookieManager->GetAllCookies(base::BindOnce(&CookieMonsterDelegateQt::GetAllCookiesCallbackOnUIThread, this, callbackId));
 }
 
 void CookieMonsterDelegateQt::setCookie(quint64 callbackId, const QNetworkCookie &cookie, const QUrl &origin)
@@ -105,25 +137,21 @@ void CookieMonsterDelegateQt::setCookie(quint64 callbackId, const QNetworkCookie
     Q_ASSERT(m_client);
 
     net::CookieStore::SetCookiesCallback callback;
-    if (callbackId != CallbackDirectory::NoCallbackId)
-        callback = base::BindOnce(&CookieMonsterDelegateQt::SetCookieCallbackOnIOThread, this, callbackId);
 
     GURL gurl = origin.isEmpty() ? sourceUrlForCookie(cookie) : toGurl(origin);
+    std::string cookie_line = cookie.toRawForm().toStdString();
 
-    base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::IO},
-                             base::BindOnce(&CookieMonsterDelegateQt::SetCookieOnIOThread, this,
-                                            gurl, cookie.toRawForm().toStdString(), std::move(callback)));
-}
-
-void CookieMonsterDelegateQt::SetCookieOnIOThread(
-        const GURL& url, const std::string& cookie_line,
-        net::CookieMonster::SetCookiesCallback callback)
-{
+    if (callbackId != CallbackDirectory::NoCallbackId)
+        callback = base::BindOnce(&CookieMonsterDelegateQt::SetCookieCallbackOnUIThread, this, callbackId);
+    net::CanonicalCookie::CookieInclusionStatus inclusion;
+    auto canonCookie = net::CanonicalCookie::Create(gurl, cookie_line, base::Time::Now(), base::nullopt, &inclusion);
+    if (!inclusion.IsInclude()) {
+        LOG(WARNING) << "QWebEngineCookieStore::setCookie() - Tried to set invalid cookie";
+        return;
+    }
     net::CookieOptions options;
     options.set_include_httponly();
-
-    if (m_cookieMonster)
-        m_cookieMonster->SetCookieWithOptionsAsync(url, cookie_line, options, std::move(callback));
+    m_mojoCookieManager->SetCanonicalCookie(*canonCookie.get(), gurl.scheme(), options, std::move(callback));
 }
 
 void CookieMonsterDelegateQt::deleteCookie(const QNetworkCookie &cookie, const QUrl &origin)
@@ -132,16 +160,11 @@ void CookieMonsterDelegateQt::deleteCookie(const QNetworkCookie &cookie, const Q
     Q_ASSERT(m_client);
 
     GURL gurl = origin.isEmpty() ? sourceUrlForCookie(cookie) : toGurl(origin);
-
-    base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::IO},
-                             base::BindOnce(&CookieMonsterDelegateQt::DeleteCookieOnIOThread, this,
-                                            gurl, cookie.name().toStdString()));
-}
-
-void CookieMonsterDelegateQt::DeleteCookieOnIOThread(const GURL& url, const std::string& cookie_name)
-{
-    if (m_cookieMonster)
-        m_cookieMonster->DeleteCookieAsync(url, cookie_name, base::Closure());
+    std::string cookie_name = cookie.name().toStdString();
+    auto filter = network::mojom::CookieDeletionFilter::New();
+    filter->url = gurl;
+    filter->cookie_name = cookie_name;
+    m_mojoCookieManager->DeleteCookies(std::move(filter), network::mojom::CookieManager::DeleteCookiesCallback());
 }
 
 void CookieMonsterDelegateQt::deleteSessionCookies(quint64 callbackId)
@@ -149,16 +172,11 @@ void CookieMonsterDelegateQt::deleteSessionCookies(quint64 callbackId)
     Q_ASSERT(hasCookieMonster());
     Q_ASSERT(m_client);
 
-    net::CookieMonster::DeleteCallback callback =
-        base::BindOnce(&CookieMonsterDelegateQt::DeleteCookiesCallbackOnIOThread, this, callbackId);
-    base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::IO},
-                             base::BindOnce(&CookieMonsterDelegateQt::DeleteSessionCookiesOnIOThread, this, std::move(callback)));
-}
-
-void CookieMonsterDelegateQt::DeleteSessionCookiesOnIOThread(net::CookieMonster::DeleteCallback callback)
-{
-    if (m_cookieMonster)
-        m_cookieMonster->DeleteSessionCookiesAsync(std::move(callback));
+    network::mojom::CookieManager::DeleteCookiesCallback callback =
+        base::BindOnce(&CookieMonsterDelegateQt::DeleteCookiesCallbackOnUIThread, this, callbackId);
+    auto filter = network::mojom::CookieDeletionFilter::New();
+    filter->session_control = network::mojom::CookieDeletionSessionControl::SESSION_COOKIES;
+    m_mojoCookieManager->DeleteCookies(std::move(filter), std::move(callback));
 }
 
 void CookieMonsterDelegateQt::deleteAllCookies(quint64 callbackId)
@@ -166,36 +184,49 @@ void CookieMonsterDelegateQt::deleteAllCookies(quint64 callbackId)
     Q_ASSERT(hasCookieMonster());
     Q_ASSERT(m_client);
 
-    net::CookieMonster::DeleteCallback callback =
-        base::BindOnce(&CookieMonsterDelegateQt::DeleteCookiesCallbackOnIOThread, this, callbackId);
-    base::PostTaskWithTraits(FROM_HERE, {content::BrowserThread::IO},
-                             base::BindOnce(&CookieMonsterDelegateQt::DeleteAllOnIOThread, this, std::move(callback)));
+    network::mojom::CookieManager::DeleteCookiesCallback callback =
+        base::BindOnce(&CookieMonsterDelegateQt::DeleteCookiesCallbackOnUIThread, this, callbackId);
+    auto filter = network::mojom::CookieDeletionFilter::New();
+    m_mojoCookieManager->DeleteCookies(std::move(filter), std::move(callback));
 }
 
-void CookieMonsterDelegateQt::DeleteAllOnIOThread(net::CookieMonster::DeleteCallback callback)
+void CookieMonsterDelegateQt::setMojoCookieManager(network::mojom::CookieManagerPtrInfo cookie_manager_info)
 {
-    if (m_cookieMonster)
-        m_cookieMonster->DeleteAllAsync(std::move(callback));
-}
+    if (m_mojoCookieManager.is_bound())
+        unsetMojoCookieManager();
 
-void CookieMonsterDelegateQt::setCookieMonster(net::CookieMonster* monster)
-{
-    if (monster == m_cookieMonster)
-        return;
+    Q_ASSERT(!m_mojoCookieManager.is_bound());
+    Q_ASSERT(!m_receiver.is_bound());
 
-    m_subscriptions.clear();
-    if (monster)
-        AddStore(monster);
+    m_mojoCookieManager.Bind(std::move(cookie_manager_info));
 
-    m_cookieMonster = monster;
+    m_mojoCookieManager->AddGlobalChangeListener(m_receiver.BindNewPipeAndPassRemote());
+    if (m_hasFilter)
+        m_mojoCookieManager->SetRemoteFilter(m_filterReceiver.BindNewPipeAndPassRemote());
 
-    if (!m_client)
-        return;
-
-    if (monster)
+    if (m_client)
         m_client->d_func()->processPendingUserCookies();
-    else
-        m_client->d_func()->rejectPendingUserCookies();
+}
+
+void CookieMonsterDelegateQt::setHasFilter(bool hasFilter)
+{
+    m_hasFilter = hasFilter;
+    if (!m_mojoCookieManager.is_bound())
+        return;
+    if (m_hasFilter) {
+        if (!m_filterReceiver.is_bound())
+            m_mojoCookieManager->SetRemoteFilter(m_filterReceiver.BindNewPipeAndPassRemote());
+    } else {
+        if (m_filterReceiver.is_bound())
+            m_filterReceiver.reset();
+    }
+}
+
+void CookieMonsterDelegateQt::unsetMojoCookieManager()
+{
+    m_receiver.reset();
+    m_filterReceiver.reset();
+    m_mojoCookieManager.reset();
 }
 
 void CookieMonsterDelegateQt::setClient(QWebEngineCookieStore *client)
@@ -227,48 +258,24 @@ bool CookieMonsterDelegateQt::canGetCookies(const QUrl &firstPartyUrl, const QUr
     return m_client->d_func()->canAccessCookies(firstPartyUrl, url);
 }
 
-void CookieMonsterDelegateQt::OnCookieChanged(const net::CanonicalCookie& cookie, net::CookieChangeCause cause)
+void CookieMonsterDelegateQt::OnCookieChanged(const net::CookieChangeInfo &change)
 {
     if (!m_client)
         return;
-    m_client->d_func()->onCookieChanged(toQt(cookie), cause != net::CookieChangeCause::INSERTED);
+    m_client->d_func()->onCookieChanged(toQt(change.cookie), change.cause != net::CookieChangeCause::INSERTED);
 }
 
-void CookieMonsterDelegateQt::GetAllCookiesCallbackOnIOThread(qint64 callbackId, const net::CookieList &cookies)
+void CookieMonsterDelegateQt::GetAllCookiesCallbackOnUIThread(qint64 callbackId, const net::CookieList &cookies)
 {
-    QByteArray rawCookies;
-    for (auto &&cookie : cookies)
-        rawCookies += toQt(cookie).toRawForm() % QByteArrayLiteral("\n");
-
-    base::PostTaskWithTraits(
-                FROM_HERE, {content::BrowserThread::UI},
-                base::BindOnce(&CookieMonsterDelegateQt::GetAllCookiesCallbackOnUIThread, this, callbackId, rawCookies));
+    QByteArray rawCookies = QByteArray::fromStdString(net::CanonicalCookie::BuildCookieLine(cookies));
+    if (m_client)
+        m_client->d_func()->onGetAllCallbackResult(callbackId, rawCookies);
 }
 
-void CookieMonsterDelegateQt::SetCookieCallbackOnIOThread(qint64 callbackId, bool success)
-{
-    base::PostTaskWithTraits(
-                FROM_HERE, {content::BrowserThread::UI},
-                base::BindOnce(&CookieMonsterDelegateQt::SetCookieCallbackOnUIThread, this, callbackId, success));
-}
-
-void CookieMonsterDelegateQt::DeleteCookiesCallbackOnIOThread(qint64 callbackId, uint numCookies)
-{
-    base::PostTaskWithTraits(
-                FROM_HERE, {content::BrowserThread::UI},
-                base::BindOnce(&CookieMonsterDelegateQt::DeleteCookiesCallbackOnUIThread, this, callbackId, numCookies));
-}
-
-void CookieMonsterDelegateQt::GetAllCookiesCallbackOnUIThread(qint64 callbackId, const QByteArray &cookies)
+void CookieMonsterDelegateQt::SetCookieCallbackOnUIThread(qint64 callbackId, net::CanonicalCookie::CookieInclusionStatus status)
 {
     if (m_client)
-        m_client->d_func()->onGetAllCallbackResult(callbackId, cookies);
-}
-
-void CookieMonsterDelegateQt::SetCookieCallbackOnUIThread(qint64 callbackId, bool success)
-{
-    if (m_client)
-        m_client->d_func()->onSetCallbackResult(callbackId, success);
+        m_client->d_func()->onSetCallbackResult(callbackId, status.IsInclude());
 }
 
 void CookieMonsterDelegateQt::DeleteCookiesCallbackOnUIThread(qint64 callbackId, uint numCookies)
@@ -276,4 +283,5 @@ void CookieMonsterDelegateQt::DeleteCookiesCallbackOnUIThread(qint64 callbackId,
     if (m_client)
         m_client->d_func()->onDeleteCallbackResult(callbackId, numCookies);
 }
-}
+
+} // namespace QtWebEngineCore
