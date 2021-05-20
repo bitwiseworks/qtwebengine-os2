@@ -5,8 +5,8 @@ defineTest(qtwebengine_skipBuild) {
 
 # this should match webengine-core-support
 defineReplace(qtwebengine_checkWebEngineCoreError) {
-    !linux:!win32:!macos {
-        qtwebengine_skipBuild("QtWebEngine can be built only on Linux, Windows or macOS.")
+    !linux:!win32:!os2:!macos {
+        qtwebengine_skipBuild("QtWebEngine can be built only on Linux, Windows, OS/2 or macOS.")
         return(false)
     }
     static {
@@ -23,13 +23,13 @@ defineReplace(qtwebengine_checkWebEngineCoreError) {
     !qtwebengine_checkForFlex(QtWebEngine):return(false)
     !qtwebengine_checkForPython2(QtWebengine):return(false)
     !qtwebengine_checkForSanitizer(QtWebEngine):return(false)
-    linux:!qtwebengine_checkForPkgCfg(QtWebEngine):return(false)
+    linux|os2:!qtwebengine_checkForPkgCfg(QtWebEngine):return(false)
     linux:!qtwebengine_checkForHostPkgCfg(QtWebEngine):return(false)
     linux:!qtwebengine_checkForGlibc(QtWebEngine):return(false)
     linux:!qtwebengine_checkForKhronos(QtWebEngine):return(false)
-    linux:!qtwebengine_checkForPackage(QtWebEngine,nss):return(false)
+    linux|os2:!qtwebengine_checkForPackage(QtWebEngine,nss):return(false)
     linux:!qtwebengine_checkForPackage(QtWebEngine,dbus):return(false)
-    linux:!qtwebengine_checkForPackage(QtWebEngine,fontconfig):return(false)
+    linux|os2:!qtwebengine_checkForPackage(QtWebEngine,fontconfig):return(false)
     linux:!qtwebengine_checkForQpaXcb(QtWebEngine):return(false)
     win32:!qtwebengine_checkForCompiler64(QtWebEngine):return(false)
     win32:!qtwebengine_checkForWinVersion(QtWebEngine):return(false)
@@ -38,8 +38,8 @@ defineReplace(qtwebengine_checkWebEngineCoreError) {
 
 # this shuold match webengine-qtpdf-support
 defineReplace(qtwebengine_checkPdfError) {
-    !linux:!win32:!macos:!ios {
-        qtwebengine_skipBuild("QtPdf can be built only on Linux, Windows, macOS or iOS.")
+    !linux:!win32:!os2:!macos:!ios {
+        qtwebengine_skipBuild("QtPdf can be built only on Linux, Windows, OS/2, macOS or iOS.")
         return(false)
     }
     !qtwebengine_checkForGui(QtPdf):return(false)

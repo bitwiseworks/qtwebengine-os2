@@ -12,7 +12,8 @@ PRECOMPILED_HEADER =
 
 isEmpty(NINJA_OBJECTS): error("Missing object files from linking pri.")
 isEmpty(NINJA_LFLAGS): error("Missing linker flags from linking pri")
-isEmpty(NINJA_ARCHIVES): error("Missing archive files from linking pri")
+# in QtPdf, there may be no archives due to system libraries used instead of bundled ones (e.g. on OS/2).
+!equals(TARGET,QtPdf):isEmpty(NINJA_ARCHIVES): error("Missing archive files from linking pri")
 isEmpty(NINJA_LIBS): error("Missing library files from linking pri")
 NINJA_OBJECTS = $$eval($$list($$NINJA_OBJECTS))
 # Do manual response file linking for macOS and Linux

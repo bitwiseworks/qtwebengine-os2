@@ -1,5 +1,6 @@
 CXX_MODULE = qml
 TARGET  = pdfplugin
+os2:TARGET_SHORT = pdf
 TARGETPATH = QtQuick/Pdf
 IMPORT_VERSION = 1.0
 

@@ -362,7 +362,7 @@
     "features": {
         "webengine-core-support": {
             "label": "Support Qt WebEngine Core",
-            "condition": "(config.linux || config.win32 || config.macos)
+            "condition": "(config.linux || config.win32 || config.os2 || config.macos)
                          && !config.static
                          && module.gui
                          && features.webengine-submodule
@@ -388,7 +388,7 @@
         },
         "webengine-qtpdf-support": {
             "label": "Support Qt Pdf",
-            "condition": "(config.linux || config.win32 || config.macos || config.ios)
+            "condition": "(config.linux || config.win32 || config.os2 || config.macos || config.ios)
                          && module.gui
                          && features.webengine-submodule
                          && features.webengine-nowhitespace

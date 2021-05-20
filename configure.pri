@@ -4,7 +4,7 @@ include(src/buildtools/config/functions.pri)
 # this must be done outside any function
 QTWEBENGINE_SOURCE_TREE = $$PWD
 
-equals(QMAKE_HOST.os, Windows): EXE_SUFFIX = .exe
+equals(QMAKE_HOST.os, Windows)|equals(QMAKE_HOST.os, OS/2): EXE_SUFFIX = .exe
 
 defineTest(isPythonVersionSupported) {
     python = $$system_quote($$system_path($$1))
