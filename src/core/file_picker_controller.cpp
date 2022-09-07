@@ -83,13 +83,13 @@ void FilePickerController::accepted(const QStringList &files)
             filePath.GetComponents(&pathComponents);
 
             QString absolutePath;
-#if !defined(OS_WIN)
+#if !defined(OS_DOSLIKE)
             absolutePath = "/";
 #endif
 
             QString scheme = toQt(pathComponents[0]);
             if (scheme.size() > 5) {
-#if defined(OS_WIN)
+#if defined(OS_DOSLIKE)
                 // There is no slash at the end of the file scheme and it is valid on Windows: file:C:/
                 if (scheme.at(5).isLetter() && scheme.at(6) != ':') {
                     absolutePath += scheme.at(5) + ":/";
@@ -97,7 +97,7 @@ void FilePickerController::accepted(const QStringList &files)
 #endif
                     qWarning("Ignoring invalid item in FilePickerController::accepted(QStringList): %s", qPrintable(urlString));
                     continue;
-#if defined(OS_WIN)
+#if defined(OS_DOSLIKE)
                 }
 #endif
             }
@@ -106,7 +106,7 @@ void FilePickerController::accepted(const QStringList &files)
             if (base::FilePath::IsSeparator(urlString.at(5).toLatin1())
                 && base::FilePath::IsSeparator(urlString.at(6).toLatin1())
                 && !base::FilePath::IsSeparator(urlString.at(7).toLatin1())) {
-#if defined(OS_WIN)
+#if defined(OS_DOSLIKE)
                 if (urlString.at(8) != ':' && pathComponents.size() > 2) {
                     absolutePath += "//";
 #else
