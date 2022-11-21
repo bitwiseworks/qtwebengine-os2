@@ -43,7 +43,6 @@
 
 #include "base/values.h"
 #include "content/browser/accessibility/accessibility_tree_formatter_blink.h"
-#include "content/browser/accessibility/accessibility_tree_formatter_browser.h"
 #include "content/browser/renderer_host/render_widget_host_view_base.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/common/font_list.h"
@@ -51,7 +50,6 @@
 #include "ui/base/dragdrop/os_exchange_data_provider_factory.h"
 #include "ui/events/devices/device_data_manager.h"
 #include "ui/events/platform/platform_event_source.h"
-#include "ui/snapshot/snapshot.h"
 #include "ppapi/buildflags/buildflags.h"
 
 #include <QGuiApplication>
@@ -63,13 +61,16 @@
 
 #if defined(USE_AURA) && !defined(USE_OZONE)
 #include "ui/base/dragdrop/os_exchange_data.h"
-#include "ui/base/dragdrop/os_exchange_data_provider_aura.h"
 #include "ui/gfx/render_text.h"
 #include "ui/gfx/platform_font.h"
 #endif
 
 #if defined(USE_OPENSSL_CERTS)
 #include "net/ssl/openssl_client_key_store.h"
+#endif
+
+#if !QT_CONFIG(webengine_webrtc) && QT_CONFIG(webengine_extensions)
+#include "chrome/browser/extensions/api/webrtc_logging_private/webrtc_logging_private_api.h"
 #endif
 
 void *GetQtXDisplay()
@@ -148,54 +149,81 @@ std::vector<AccessibilityTreeFormatter::TestPass> AccessibilityTreeFormatter::Ge
 }
 } // namespace content
 
-#if defined(USE_AURA)
-namespace ui {
-
-bool GrabWindowSnapshot(gfx::NativeWindow window,
-                        const gfx::Rect& snapshot_bounds,
-                        gfx::Image* image)
+std::unique_ptr<ui::OSExchangeDataProvider> ui::OSExchangeDataProviderFactory::CreateProvider()
 {
-    NOTIMPLEMENTED();
-    return false;
-}
-
-bool GrabViewSnapshot(gfx::NativeView view,
-                      const gfx::Rect& snapshot_bounds,
-                      gfx::Image* image)
-{
-    NOTIMPLEMENTED();
-    return false;
-}
-
-void GrabWindowSnapshotAndScaleAsync(gfx::NativeWindow window,
-                                     const gfx::Rect& source_rect,
-                                     const gfx::Size& target_size,
-                                     GrabWindowSnapshotAsyncCallback callback)
-{
-    NOTIMPLEMENTED();
-    std::move(callback).Run(gfx::Image());
-}
-
-void GrabWindowSnapshotAsync(gfx::NativeWindow window,
-                             const gfx::Rect& source_rect,
-                             GrabWindowSnapshotAsyncCallback callback)
-{
-    NOTIMPLEMENTED();
-    std::move(callback).Run(gfx::Image());
-}
-
-void GrabViewSnapshotAsync(gfx::NativeView view,
-                           const gfx::Rect& source_rect,
-                           GrabWindowSnapshotAsyncCallback callback)
-{
-    NOTIMPLEMENTED();
-    std::move(callback).Run(gfx::Image());
-}
-
-} // namespace ui
-#endif // defined(USE_AURA)
-
-std::unique_ptr<ui::OSExchangeData::Provider>
-ui::OSExchangeDataProviderFactory::CreateProvider() {
     return nullptr;
 }
+
+#if !QT_CONFIG(webengine_webrtc) && QT_CONFIG(webengine_extensions)
+namespace extensions {
+ExtensionFunction::ResponseAction WebrtcLoggingPrivateSetMetaDataFunction::Run()
+{
+    return RespondNow(NoArguments());
+}
+
+ExtensionFunction::ResponseAction WebrtcLoggingPrivateStartFunction::Run()
+{
+    return RespondNow(NoArguments());
+}
+
+ExtensionFunction::ResponseAction WebrtcLoggingPrivateSetUploadOnRenderCloseFunction::Run()
+{
+    return RespondNow(NoArguments());
+}
+
+ExtensionFunction::ResponseAction WebrtcLoggingPrivateStopFunction::Run()
+{
+    return RespondNow(NoArguments());
+}
+
+ExtensionFunction::ResponseAction WebrtcLoggingPrivateStoreFunction::Run()
+{
+    return RespondNow(NoArguments());
+}
+
+ExtensionFunction::ResponseAction WebrtcLoggingPrivateUploadStoredFunction::Run()
+{
+    return RespondNow(NoArguments());
+}
+
+ExtensionFunction::ResponseAction WebrtcLoggingPrivateUploadFunction::Run()
+{
+    return RespondNow(NoArguments());
+}
+
+ExtensionFunction::ResponseAction WebrtcLoggingPrivateDiscardFunction::Run()
+{
+    return RespondNow(NoArguments());
+}
+
+ExtensionFunction::ResponseAction WebrtcLoggingPrivateStartRtpDumpFunction::Run()
+{
+    return RespondNow(NoArguments());
+}
+
+ExtensionFunction::ResponseAction WebrtcLoggingPrivateStopRtpDumpFunction::Run()
+{
+    return RespondNow(NoArguments());
+}
+
+ExtensionFunction::ResponseAction WebrtcLoggingPrivateStartAudioDebugRecordingsFunction::Run()
+{
+    return RespondNow(NoArguments());
+}
+
+ExtensionFunction::ResponseAction WebrtcLoggingPrivateStopAudioDebugRecordingsFunction::Run()
+{
+    return RespondNow(NoArguments());
+}
+
+ExtensionFunction::ResponseAction WebrtcLoggingPrivateStartEventLoggingFunction::Run()
+{
+    return RespondNow(NoArguments());
+}
+
+ExtensionFunction::ResponseAction WebrtcLoggingPrivateGetLogsDirectoryFunction::Run()
+{
+    return RespondNow(NoArguments());
+}
+} // namespace extensions
+#endif // !QT_CONFIG(webengine_webrtc) && QT_CONFIG(webengine_extensions)

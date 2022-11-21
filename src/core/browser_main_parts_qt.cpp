@@ -41,10 +41,9 @@
 
 #include "api/qwebenginemessagepumpscheduler_p.h"
 
-#include "base/message_loop/message_loop.h"
-#include "base/message_loop/message_loop_current.h"
 #include "base/message_loop/message_pump_for_ui.h"
 #include "base/process/process.h"
+#include "base/task/current_thread.h"
 #include "base/task/sequence_manager/sequence_manager_impl.h"
 #include "base/task/sequence_manager/thread_controller_with_message_pump_impl.h"
 #include "base/threading/thread_restrictions.h"
@@ -60,10 +59,12 @@
 #include "content/public/common/service_manager_connection.h"
 #include "extensions/buildflags/buildflags.h"
 #if BUILDFLAG(ENABLE_EXTENSIONS)
+#include "content/public/browser/plugin_service.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extensions_client.h"
 #include "extensions/extensions_browser_client_qt.h"
 #include "extensions/extension_system_factory_qt.h"
+#include "extensions/plugin_service_filter_qt.h"
 #include "common/extensions/extensions_client_qt.h"
 #endif //BUILDFLAG(ENABLE_EXTENSIONS)
 #include "services/service_manager/public/cpp/connector.h"
@@ -79,7 +80,7 @@
 #include <QOpenGLContext>
 #endif
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 #include "base/message_loop/message_pump_mac.h"
 #include "ui/base/idle/idle.h"
 #endif
@@ -150,7 +151,7 @@ private:
     void ensureDelegate()
     {
         if (!m_delegate) {
-            auto seqMan = base::MessageLoopCurrent::GetCurrentSequenceManagerImpl();
+            auto seqMan = base::CurrentThread::Get()->GetCurrentSequenceManagerImpl();
             m_delegate = static_cast<base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl *>(
                              seqMan->controller_.get());
         }
@@ -226,7 +227,7 @@ std::unique_ptr<base::MessagePump> messagePumpFactory()
         madePrimaryPump = true;
         return std::make_unique<MessagePumpForUIQt>();
     }
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
     return base::MessagePumpMac::Create();
 #else
     return std::make_unique<base::MessagePumpForUI>();
@@ -251,6 +252,9 @@ void BrowserMainPartsQt::PreMainMessageLoopRun()
     extensions::ExtensionsClient::Set(new extensions::ExtensionsClientQt());
     extensions::ExtensionsBrowserClient::Set(new extensions::ExtensionsBrowserClientQt());
     extensions::ExtensionSystemFactoryQt::GetInstance();
+
+    content::PluginService *plugin_service = content::PluginService::GetInstance();
+    plugin_service->SetFilter(extensions::PluginServiceFilterQt::GetInstance());
 #endif //ENABLE_EXTENSIONS
 }
 
@@ -269,7 +273,7 @@ int BrowserMainPartsQt::PreCreateThreads()
 {
     base::ThreadRestrictions::SetIOAllowed(true);
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
     ui::InitIdleMonitor();
 #endif
 

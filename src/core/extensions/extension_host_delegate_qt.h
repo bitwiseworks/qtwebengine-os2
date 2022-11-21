@@ -1,6 +1,6 @@
 /****************************************************************************
 **
-** Copyright (C) 2016 The Qt Company Ltd.
+** Copyright (C) 2020 The Qt Company Ltd.
 ** Contact: https://www.qt.io/licensing/
 **
 ** This file is part of the QtWebEngine module of the Qt Toolkit.
@@ -37,13 +37,41 @@
 **
 ****************************************************************************/
 
-#include "user_script_data.h"
-#include "base/pickle.h"
+#ifndef EXTENSION_HOST_DELEGATE_QT_H
+#define EXTENSION_HOST_DELEGATE_QT_H
 
-UserScriptData::UserScriptData() : injectionPoint(AfterLoad)
-  , injectForSubframes(false)
-  , worldId(1)
+#include "extensions/browser/extension_host_delegate.h"
+
+namespace extensions {
+
+class ExtensionHostDelegateQt : public ExtensionHostDelegate
 {
-    static uint64_t idCount = 0;
-    scriptId = idCount++;
-}
+public:
+    ExtensionHostDelegateQt();
+
+    // EtensionHostDelegate implementation.
+    void OnExtensionHostCreated(content::WebContents *web_contents) override;
+    void OnRenderViewCreatedForBackgroundPage(ExtensionHost *host) override;
+    content::JavaScriptDialogManager *GetJavaScriptDialogManager() override;
+    void CreateTab(std::unique_ptr<content::WebContents> web_contents,
+                   const std::string &extension_id,
+                   WindowOpenDisposition disposition,
+                   const gfx::Rect &initial_rect,
+                   bool user_gesture) override;
+    void ProcessMediaAccessRequest(content::WebContents *web_contents,
+                                   const content::MediaStreamRequest &request,
+                                   content::MediaResponseCallback callback,
+                                   const Extension *extension) override;
+    bool CheckMediaAccessPermission(content::RenderFrameHost *render_frame_host,
+                                    const GURL &security_origin,
+                                    blink::mojom::MediaStreamType type,
+                                    const Extension *extension) override;
+    content::PictureInPictureResult EnterPictureInPicture(content::WebContents *web_contents,
+                                                          const viz::SurfaceId &surface_id,
+                                                          const gfx::Size &natural_size) override;
+    void ExitPictureInPicture() override;
+};
+
+} // namespace extensions
+
+#endif // EXTENSION_HOST_DELEGATE_QT_H

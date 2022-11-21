@@ -174,7 +174,6 @@ private Q_SLOTS:
     void setUrlUsingStateObject();
     void setUrlThenLoads_data();
     void setUrlThenLoads();
-    void loadFinishedAfterNotFoundError();
     void loadInSignalHandlers_data();
     void loadInSignalHandlers();
     void loadFromQrc();
@@ -520,7 +519,7 @@ void tst_QWebEnginePage::consoleOutput()
 class TestPage : public QWebEnginePage {
     Q_OBJECT
 public:
-    TestPage(QObject* parent = 0) : QWebEnginePage(parent)
+    TestPage(QObject *parent = nullptr) : QWebEnginePage(parent)
     {
         connect(this, SIGNAL(geometryChangeRequested(QRect)), this, SLOT(slotGeometryChangeRequested(QRect)));
     }
@@ -597,6 +596,39 @@ void tst_QWebEnginePage::acceptNavigationRequestNavigationType()
         << QWebEnginePage::NavigationTypeReload
         << QWebEnginePage::NavigationTypeTyped
         << QWebEnginePage::NavigationTypeRedirect;
+
+    // client side redirect
+    page.load(QUrl("qrc:///resources/redirect.html"));
+    QTRY_COMPARE_WITH_TIMEOUT(loadSpy.count(), 7, 20000);
+    QTRY_COMPARE(page.navigations.count(), 8);
+    expectedList += { QWebEnginePage::NavigationTypeTyped, QWebEnginePage::NavigationTypeRedirect };
+
+    // server side redirect
+    HttpServer server;
+    server.setResourceDirs({ ":/resources" });
+    connect(&server, &HttpServer::newRequest, &server, [&] (HttpReqRep *r) {
+        if (r->requestMethod() == "GET") {
+            if (r->requestPath() == "/redirect1.html") {
+                r->setResponseHeader("Location", server.url("/redirect2.html").toEncoded());
+                r->setResponseBody("<html><body>Redirect1</body></html>");
+                r->sendResponse(307); // Internal server redirect
+            } else if (r->requestPath() == "/redirect2.html") {
+                r->setResponseHeader("Location", server.url("/content.html").toEncoded());
+                r->setResponseBody("<html><body>Redirect2</body></html>");
+                r->sendResponse(301); // Moved permanently
+            }
+        }
+    });
+    QVERIFY(server.start());
+    page.load(QUrl(server.url("/redirect1.html")));
+    QTRY_COMPARE_WITH_TIMEOUT(loadSpy.count(), 8, 20000);
+    QTRY_COMPARE(page.navigations.count(), 11);
+    expectedList += {
+        QWebEnginePage::NavigationTypeTyped,
+        QWebEnginePage::NavigationTypeRedirect,
+        QWebEnginePage::NavigationTypeRedirect
+    };
+
     QVERIFY(expectedList.count() == page.navigations.count());
     for (int i = 0; i < expectedList.count(); ++i) {
         QCOMPARE(page.navigations[i].type, expectedList[i]);
@@ -1713,12 +1745,15 @@ void tst_QWebEnginePage::savePage()
 void tst_QWebEnginePage::openWindowDefaultSize()
 {
     TestPage page;
+    QSignalSpy spyFinished(&page, &QWebEnginePage::loadFinished);
     QSignalSpy windowCreatedSpy(&page, SIGNAL(windowCreated()));
     QWebEngineView view;
     page.setView(&view);
-    view.show();
-
     page.settings()->setAttribute(QWebEngineSettings::JavascriptCanOpenWindows, true);
+    page.setUrl(QUrl("about:blank"));
+    view.show();
+    QTRY_COMPARE(spyFinished.count(), 1);
+
     // Open a default window.
     page.runJavaScript("window.open()");
     QTRY_COMPARE(windowCreatedSpy.count(), 1);
@@ -2820,20 +2855,6 @@ void tst_QWebEnginePage::setUrlThenLoads()
     QCOMPARE(baseUrlSync(m_page), extractBaseUrl(urlToLoad2));
 }
 
-void tst_QWebEnginePage::loadFinishedAfterNotFoundError()
-{
-    QWebEnginePage page;
-    QSignalSpy spy(&page, SIGNAL(loadFinished(bool)));
-
-    page.settings()->setAttribute(QWebEngineSettings::ErrorPageEnabled, false);
-    page.setUrl(QUrl("http://non.existent/url"));
-    QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 20000);
-
-    page.settings()->setAttribute(QWebEngineSettings::ErrorPageEnabled, true);
-    page.setUrl(QUrl("http://another.non.existent/url"));
-    QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 2, 20000);
-}
-
 class URLSetter : public QObject {
     Q_OBJECT
 
@@ -2915,11 +2936,7 @@ void tst_QWebEnginePage::loadInSignalHandlers()
     URLSetter setter(m_page, signal, type, urlForSetter);
     QSignalSpy spy(&setter, &URLSetter::finished);
     m_page->load(url);
-    // every loadStarted() call should have also loadFinished()
-    if (signal == URLSetter::LoadStarted)
-        QTRY_COMPARE(spy.count(), 2);
-    else
-        QTRY_COMPARE(spy.count(), 1);
+    QTRY_COMPARE(spy.count(), 1);
     QCOMPARE(m_page->url(), urlForSetter);
 }
 
@@ -3349,7 +3366,7 @@ void tst_QWebEnginePage::devTools()
     QCOMPARE(devToolsPage.devToolsPage(), nullptr);
     QCOMPARE(devToolsPage.inspectedPage(), &inspectedPage1);
 
-    QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 30000);
+    QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 90000);
     QVERIFY(spy.takeFirst().value(0).toBool());
 
     devToolsPage.setInspectedPage(&inspectedPage2);
@@ -3361,7 +3378,7 @@ void tst_QWebEnginePage::devTools()
     QCOMPARE(devToolsPage.devToolsPage(), nullptr);
     QCOMPARE(devToolsPage.inspectedPage(), &inspectedPage2);
 
-    QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 30000);
+    QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 90000);
     QVERIFY(spy.takeFirst().value(0).toBool());
 
     devToolsPage.setInspectedPage(nullptr);
@@ -3458,7 +3475,11 @@ void tst_QWebEnginePage::openLinkInNewPage_data()
     // the disposition and performing the navigation request normally.
 
     QTest::newRow("BlockPopup")     << Decision::ReturnNull  << Cause::TargetBlank << Effect::Blocked;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    QTest::newRow("IgnoreIntent")   << Decision::ReturnNull  << Cause::MiddleClick << Effect::Blocked;
+#else
     QTest::newRow("IgnoreIntent")   << Decision::ReturnNull  << Cause::MiddleClick << Effect::LoadInSelf;
+#endif
     QTest::newRow("OverridePopup")  << Decision::ReturnSelf  << Cause::TargetBlank << Effect::LoadInSelf;
     QTest::newRow("OverrideIntent") << Decision::ReturnSelf  << Cause::MiddleClick << Effect::LoadInSelf;
     QTest::newRow("AcceptPopup")    << Decision::ReturnOther << Cause::TargetBlank << Effect::LoadInOther;
@@ -3535,7 +3556,10 @@ void tst_QWebEnginePage::openLinkInNewPage()
 
     switch (effect) {
     case Effect::Blocked:
-        // Nothing to test
+        // Test nothing new loaded
+        QTest::qWait(500);
+        QCOMPARE(page1.spy.count(), 0);
+        QCOMPARE(page2.spy.count(), 0);
         break;
     case Effect::LoadInSelf:
         QTRY_COMPARE(page1.spy.count(), 1);
@@ -4028,16 +4052,16 @@ void tst_QWebEnginePage::setLifecycleStateWithDevTools()
     // Ensure pages are initialized
     inspectedPage.load(QStringLiteral("about:blank"));
     devToolsPage.load(QStringLiteral("about:blank"));
-    QTRY_COMPARE_WITH_TIMEOUT(inspectedSpy.count(), 1, 30000);
+    QTRY_COMPARE_WITH_TIMEOUT(inspectedSpy.count(), 1, 90000);
     QCOMPARE(inspectedSpy.takeFirst().value(0), QVariant(true));
-    QTRY_COMPARE_WITH_TIMEOUT(devToolsSpy.count(), 1, 30000);
+    QTRY_COMPARE_WITH_TIMEOUT(devToolsSpy.count(), 1, 90000);
     QCOMPARE(devToolsSpy.takeFirst().value(0), QVariant(true));
 
     // Open DevTools with Frozen inspectedPage
     inspectedPage.setLifecycleState(QWebEnginePage::LifecycleState::Frozen);
     inspectedPage.setDevToolsPage(&devToolsPage);
     QCOMPARE(inspectedPage.lifecycleState(), QWebEnginePage::LifecycleState::Active);
-    QTRY_COMPARE(devToolsSpy.count(), 1);
+    QTRY_COMPARE_WITH_TIMEOUT(devToolsSpy.count(), 1, 90000);
     QCOMPARE(devToolsSpy.takeFirst().value(0), QVariant(true));
     inspectedPage.setDevToolsPage(nullptr);
 
@@ -4045,7 +4069,7 @@ void tst_QWebEnginePage::setLifecycleStateWithDevTools()
     inspectedPage.setLifecycleState(QWebEnginePage::LifecycleState::Discarded);
     inspectedPage.setDevToolsPage(&devToolsPage);
     QCOMPARE(inspectedPage.lifecycleState(), QWebEnginePage::LifecycleState::Active);
-    QTRY_COMPARE(devToolsSpy.count(), 1);
+    QTRY_COMPARE_WITH_TIMEOUT(devToolsSpy.count(), 1, 90000);
     QCOMPARE(devToolsSpy.takeFirst().value(0), QVariant(true));
     QTRY_COMPARE(inspectedSpy.count(), 1);
     QCOMPARE(inspectedSpy.takeFirst().value(0), QVariant(true));
@@ -4055,7 +4079,7 @@ void tst_QWebEnginePage::setLifecycleStateWithDevTools()
     devToolsPage.setLifecycleState(QWebEnginePage::LifecycleState::Frozen);
     devToolsPage.setInspectedPage(&inspectedPage);
     QCOMPARE(devToolsPage.lifecycleState(), QWebEnginePage::LifecycleState::Active);
-    QTRY_COMPARE(devToolsSpy.count(), 1);
+    QTRY_COMPARE_WITH_TIMEOUT(devToolsSpy.count(), 1, 90000);
     QCOMPARE(devToolsSpy.takeFirst().value(0), QVariant(true));
     devToolsPage.setInspectedPage(nullptr);
 
@@ -4063,8 +4087,7 @@ void tst_QWebEnginePage::setLifecycleStateWithDevTools()
     devToolsPage.setLifecycleState(QWebEnginePage::LifecycleState::Discarded);
     devToolsPage.setInspectedPage(&inspectedPage);
     QCOMPARE(devToolsPage.lifecycleState(), QWebEnginePage::LifecycleState::Active);
-    QTRY_COMPARE(devToolsSpy.count(), 2);
-    QCOMPARE(devToolsSpy.takeFirst().value(0), QVariant(false));
+    QTRY_COMPARE_WITH_TIMEOUT(devToolsSpy.count(), 1, 90000);
     QCOMPARE(devToolsSpy.takeFirst().value(0), QVariant(true));
     // keep DevTools open
 
@@ -4664,7 +4687,10 @@ void tst_QWebEnginePage::audioMuted()
 void tst_QWebEnginePage::closeContents()
 {
     TestPage page;
+    QSignalSpy spyFinished(&page, &QWebEnginePage::loadFinished);
     QSignalSpy windowCreatedSpy(&page, &TestPage::windowCreated);
+    page.setUrl(QUrl("about:blank"));
+    QTRY_COMPARE(spyFinished.count(), 1);
     page.runJavaScript("var dialog = window.open('', '', 'width=100, height=100');");
     QTRY_COMPARE(windowCreatedSpy.count(), 1);
 

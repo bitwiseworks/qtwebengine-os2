@@ -1,6 +1,6 @@
 /****************************************************************************
 **
-** Copyright (C) 2016 The Qt Company Ltd.
+** Copyright (C) 2020 The Qt Company Ltd.
 ** Contact: https://www.qt.io/licensing/
 **
 ** This file is part of the QtWebEngine module of the Qt Toolkit.
@@ -37,36 +37,30 @@
 **
 ****************************************************************************/
 
-#ifndef RENDER_VIEW_OBSERVER_HOST_QT_H
-#define RENDER_VIEW_OBSERVER_HOST_QT_H
+#ifndef MESSAGING_DELEGATE_QT_H
+#define MESSAGING_DELEGATE_QT_H
 
-#include "content/public/browser/web_contents_observer.h"
+#include "extensions/browser/api/messaging/messaging_delegate.h"
 
-#include <QtGlobal>
+namespace base {
+class DictionaryValue;
+}
 
 namespace content {
 class WebContents;
 }
 
-namespace QtWebEngineCore {
+namespace extensions {
 
-class WebContentsAdapterClient;
-
-class RenderViewObserverHostQt : public content::WebContentsObserver
+class MessagingDelegateQt : public MessagingDelegate
 {
 public:
-    RenderViewObserverHostQt(content::WebContents *, WebContentsAdapterClient *adapterClient);
-    void fetchDocumentMarkup(quint64 requestId);
-    void fetchDocumentInnerText(quint64 requestId);
+    MessagingDelegateQt();
 
-private:
-    bool OnMessageReceived(const IPC::Message &message) override;
-    void onDidFetchDocumentMarkup(quint64 requestId, const base::string16 &markup);
-    void onDidFetchDocumentInnerText(quint64 requestId, const base::string16 &innerText);
-
-    WebContentsAdapterClient *m_adapterClient;
+    // MessagingDelegate implementation.
+    std::unique_ptr<base::DictionaryValue> MaybeGetTabInfo(content::WebContents *web_contents) override;
 };
 
-} // namespace QtWebEngineCore
+} // namespace extensions
 
-#endif // RENDER_VIEW_OBSERVER_HOST_QT_H
+#endif // MESSAGING_DELEGATE_QT_H

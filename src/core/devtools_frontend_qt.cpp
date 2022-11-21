@@ -59,6 +59,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/post_task.h"
 #include "base/values.h"
+#include "chrome/browser/devtools/devtools_eye_dropper.h"
 #include "chrome/common/url_constants.h"
 #include "components/prefs/in_memory_pref_store.h"
 #include "components/prefs/json_pref_store.h"
@@ -117,7 +118,7 @@ std::unique_ptr<base::DictionaryValue> BuildObjectForResponse(const net::HttpRes
 
 static std::string GetFrontendURL()
 {
-    return "devtools://devtools/bundled/devtools_app.html";
+    return "devtools://devtools/bundled/inspector.html";
 }
 
 }  // namespace
@@ -442,11 +443,11 @@ void DevToolsFrontendQt::HandleMessageFromDevToolsFrontend(const std::string &me
         resource_request->site_for_cookies = net::SiteForCookies::FromUrl(gurl);
         resource_request->headers.AddHeadersFromString(headers);
 
-        std::unique_ptr<network::mojom::URLLoaderFactory> file_url_loader_factory;
+        mojo::Remote<network::mojom::URLLoaderFactory> file_url_loader_factory;
         scoped_refptr<network::SharedURLLoaderFactory> network_url_loader_factory;
         network::mojom::URLLoaderFactory *url_loader_factory;
         if (gurl.SchemeIsFile()) {
-            file_url_loader_factory = content::CreateFileURLLoaderFactory(base::FilePath(), nullptr);
+            file_url_loader_factory.Bind(content::CreateFileURLLoaderFactory(base::FilePath(), nullptr));
             url_loader_factory = file_url_loader_factory.get();
         } else if (content::HasWebUIScheme(gurl)) {
             base::DictionaryValue response;
@@ -529,6 +530,13 @@ void DevToolsFrontendQt::HandleMessageFromDevToolsFrontend(const std::string &me
             return;
     } else if (method == "bringToFront") {
         Activate();
+    } else if (method == "closeWindow") {
+        web_contents()->Close();
+    } else if (method == "setEyeDropperActive" && params->GetSize() == 1) {
+        bool active;
+        if (!params->GetBoolean(0, &active))
+            return;
+        SetEyeDropperActive(active);
     } else {
         VLOG(1) << "Unimplemented devtools method: " << message;
         return;
@@ -536,6 +544,30 @@ void DevToolsFrontendQt::HandleMessageFromDevToolsFrontend(const std::string &me
 
     if (request_id)
         SendMessageAck(request_id, nullptr);
+}
+
+void DevToolsFrontendQt::SetEyeDropperActive(bool active)
+{
+    if (!m_inspectedContents)
+        return;
+    if (active) {
+        m_eyeDropper.reset(new DevToolsEyeDropper(
+                               m_inspectedContents,
+                               base::Bind(&DevToolsFrontendQt::ColorPickedInEyeDropper,
+                                          base::Unretained(this))));
+    } else {
+        m_eyeDropper.reset();
+    }
+}
+
+void DevToolsFrontendQt::ColorPickedInEyeDropper(int r, int g, int b, int a)
+{
+    base::DictionaryValue color;
+    color.SetInteger("r", r);
+    color.SetInteger("g", g);
+    color.SetInteger("b", b);
+    color.SetInteger("a", a);
+    CallClientFunction("DevToolsAPI.eyeDropperPickedColor", &color, nullptr, nullptr);
 }
 
 void DevToolsFrontendQt::DispatchProtocolMessage(content::DevToolsAgentHost *agentHost, base::span<const uint8_t> message)

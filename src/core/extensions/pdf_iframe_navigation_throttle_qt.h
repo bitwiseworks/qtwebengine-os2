@@ -1,6 +1,6 @@
 /****************************************************************************
 **
-** Copyright (C) 2019 The Qt Company Ltd.
+** Copyright (C) 2021 The Qt Company Ltd.
 ** Contact: https://www.qt.io/licensing/
 **
 ** This file is part of the QtWebEngine module of the Qt Toolkit.
@@ -37,39 +37,46 @@
 **
 ****************************************************************************/
 
-// based on chrome/renderer/chrome_render_thread_observer.cc:
-// Copyright (c) 2012 The Chromium Authors. All rights reserved.
+// based on //chrome/browser/plugins/pdf_iframe_navigation_throttle.h
+// Copyright 2017 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "renderer/render_thread_observer_qt.h"
+#ifndef PDF_IFRAME_NAVIGATION_THROTTLE_QT
+#define PDF_IFRAME_NAVIGATION_THROTTLE_QT
 
-#include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
+#include "content/public/browser/navigation_throttle.h"
 
-namespace QtWebEngineCore {
+#include "base/memory/weak_ptr.h"
 
-bool RenderThreadObserverQt::m_isIncognitoProcess = false;
-
-void RenderThreadObserverQt::RegisterMojoInterfaces(blink::AssociatedInterfaceRegistry *associated_interfaces)
-{
-    associated_interfaces->AddInterface(
-            base::Bind(&RenderThreadObserverQt::OnRendererConfigurationAssociatedRequest, base::Unretained(this)));
+namespace content {
+class NavigationHandle;
+struct WebPluginInfo;
 }
 
-void RenderThreadObserverQt::UnregisterMojoInterfaces(blink::AssociatedInterfaceRegistry *associated_interfaces)
-{
-    associated_interfaces->RemoveInterface(qtwebengine::mojom::RendererConfiguration::Name_);
-}
+namespace extensions {
 
-void RenderThreadObserverQt::SetInitialConfiguration(bool is_incognito_process)
+// This class prevents automatical download of PDFs when they are embedded
+// in subframes and plugins are disabled in API.
+class PDFIFrameNavigationThrottleQt : public content::NavigationThrottle
 {
-    m_isIncognitoProcess = is_incognito_process;
-}
+public:
+    static std::unique_ptr<content::NavigationThrottle> MaybeCreateThrottleFor(content::NavigationHandle *handle);
 
-void RenderThreadObserverQt::OnRendererConfigurationAssociatedRequest(
-        mojo::PendingAssociatedReceiver<qtwebengine::mojom::RendererConfiguration> receiver)
-{
-    m_rendererConfigurationReceivers.Add(this, std::move(receiver));
-}
+    explicit PDFIFrameNavigationThrottleQt(content::NavigationHandle *handle);
+    ~PDFIFrameNavigationThrottleQt() override;
 
-} // namespace
+    // content::NavigationThrottle
+    content::NavigationThrottle::ThrottleCheckResult WillProcessResponse() override;
+    const char *GetNameForLogging() override;
+
+private:
+    void OnPluginsLoaded(const std::vector<content::WebPluginInfo> &plugins);
+    void LoadPlaceholderHTML();
+
+    base::WeakPtrFactory<PDFIFrameNavigationThrottleQt> weak_factory_{this};
+};
+
+} // namespace extensions
+
+#endif // PDF_IFRAME_NAVIGATION_THROTTLE_QT

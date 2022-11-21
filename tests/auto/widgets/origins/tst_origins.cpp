@@ -27,6 +27,7 @@
 ****************************************************************************/
 
 #include "../util.h"
+#include "httpserver.h"
 
 #include <QtCore/qfile.h>
 #include <QtTest/QtTest>
@@ -215,6 +216,8 @@ private Q_SLOTS:
     void jsUrlOrigin();
     void subdirWithAccess();
     void subdirWithoutAccess();
+    void fileAccessRemoteUrl_data();
+    void fileAccessRemoteUrl();
     void mixedSchemes();
     void mixedSchemesWithCsp();
     void mixedXHR_data();
@@ -497,6 +500,31 @@ void tst_Origins::subdirWithoutAccess()
     QCOMPARE(eval(QSL("msg[1]")), QVariant(QSL("world")));
 }
 
+void tst_Origins::fileAccessRemoteUrl_data()
+{
+    QTest::addColumn<bool>("EnableAccess");
+    QTest::addRow("enabled") << true;
+    QTest::addRow("disabled") << false;
+}
+
+void tst_Origins::fileAccessRemoteUrl()
+{
+    QFETCH(bool, EnableAccess);
+
+    HttpServer server;
+    server.setResourceDirs({ THIS_DIR "resources" });
+    QVERIFY(server.start());
+
+    ScopedAttribute sa(m_page->settings(), QWebEngineSettings::LocalContentCanAccessRemoteUrls, EnableAccess);
+    if (!EnableAccess)
+        QTest::ignoreMessage(QtSystemMsg, QRegularExpression(QSL("blocked by CORS policy")));
+
+    QVERIFY(verifyLoad(QSL("file:" THIS_DIR "resources/mixedXHR.html")));
+
+    eval("sendXHR('" + server.url("/mixedXHR.txt").toString() + "')");
+    QTRY_COMPARE(eval("result"), (EnableAccess ? QString("ok") : QString("error")));
+}
+
 // Load the main page over one scheme with an iframe over another scheme.
 //
 // For file and qrc schemes, the iframe should load but it should not be
@@ -629,7 +657,7 @@ void tst_Origins::mixedXHR_data()
                                 << QVariant(QString("ok"));
     QTest::newRow("file->cors") << QString("file:" THIS_DIR "resources/mixedXHR.html")
                                 << QString("sendXHR('cors:/resources/mixedXHR.txt')")
-                                << QVariant(QString("ok"));
+                                << QVariant(QString("error"));
 
     QTest::newRow("qrc->file") << QString("qrc:/resources/mixedXHR.html")
                                << QString("sendXHR('file:" THIS_DIR "resources/mixedXHR.txt')")
