@@ -52,6 +52,9 @@
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/threading/thread_restrictions.h"
 #include "cc/base/switches.h"
+#if QT_CONFIG(webengine_webrtc) && QT_CONFIG(webengine_extensions)
+#include "chrome/browser/media/webrtc/webrtc_log_uploader.h"
+#endif
 #include "chrome/common/chrome_switches.h"
 #include "content/gpu/gpu_child_thread.h"
 #include "content/browser/compositor/surface_utils.h"
@@ -59,7 +62,6 @@
 #include "components/viz/host/host_frame_sink_manager.h"
 #if QT_CONFIG(webengine_printing_and_pdf)
 #include "chrome/browser/printing/print_job_manager.h"
-#include "components/printing/browser/features.h"
 #endif
 #include "components/discardable_memory/service/discardable_shared_memory_manager.h"
 #include "components/viz/common/features.h"
@@ -89,10 +91,11 @@
 #include "mojo/core/embedder/embedder.h"
 #include "net/base/port_util.h"
 #include "ppapi/buildflags/buildflags.h"
+#include "sandbox/policy/switches.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/network_switches.h"
 #include "services/network/public/mojom/network_context.mojom.h"
-#include "services/service_manager/sandbox/switches.h"
+#include "services/service_manager/switches.h"
 #include "services/tracing/public/cpp/trace_startup.h"
 #include "services/tracing/public/cpp/tracing_features.h"
 #include "third_party/blink/public/common/features.h"
@@ -351,26 +354,36 @@ void WebEngineContext::removeProfileAdapter(ProfileAdapter *profileAdapter)
     m_profileAdapters.removeAll(profileAdapter);
 }
 
+void WebEngineContext::flushMessages()
+{
+    if (!m_destroyed) {
+        base::MessagePump::Delegate *delegate = static_cast<
+                base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl *>(
+                WebEngineContext::current()->m_runLoop->delegate_);
+        while (delegate->DoWork().is_immediate()) { }
+    }
+}
 void WebEngineContext::destroy()
 {
     if (m_devtoolsServer)
         m_devtoolsServer->stop();
 
+#if QT_CONFIG(webengine_webrtc) && QT_CONFIG(webengine_extensions)
+    if (m_webrtcLogUploader)
+        m_webrtcLogUploader->Shutdown();
+#endif
 
-    base::MessagePump::Delegate *delegate =
-            static_cast<base::sequence_manager::internal::ThreadControllerWithMessagePumpImpl *>(
-                m_runLoop->delegate_);
     // Normally the GPU thread is shut down when the GpuProcessHost is destroyed
     // on IO thread (triggered by ~BrowserMainRunner). But by that time the UI
     // task runner is not working anymore so we need to do this earlier.
     cleanupVizProcess();
     while (waitForViz) {
-        while (delegate->DoWork().is_immediate()) { }
+        flushMessages();
         QThread::msleep(50);
     }
     destroyGpuProcess();
     // Flush the UI message loop before quitting.
-    while (delegate->DoWork().is_immediate()) { }
+    flushMessages();
 
 #if QT_CONFIG(webengine_printing_and_pdf)
     // Kill print job manager early as it has a content::NotificationRegistrar
@@ -392,7 +405,7 @@ void WebEngineContext::destroy()
 
     // Handle any events posted by browser-context shutdown.
     // This should deliver all nessesery calls of DeleteSoon from PostTask
-    while (delegate->DoWork().is_immediate()) { }
+    flushMessages();
 
     m_devtoolsServer.reset();
     m_runLoop->AfterRun();
@@ -413,6 +426,10 @@ void WebEngineContext::destroy()
 
     // Drop the false reference.
     m_handle->Release();
+
+#if QT_CONFIG(webengine_webrtc) && QT_CONFIG(webengine_extensions)
+    m_webrtcLogUploader.reset();
+#endif
 }
 
 WebEngineContext::~WebEngineContext()
@@ -508,23 +525,47 @@ bool WebEngineContext::isGpuServiceOnUIThread()
     return !threadedGpu;
 }
 
-static void appendToFeatureList(std::string &featureList, const char *feature)
+static void initializeFeatureList(base::CommandLine *commandLine, std::vector<std::string> enableFeatures, std::vector<std::string> disableFeatures)
 {
-    if (featureList.empty())
-        featureList = feature;
-    else
-        featureList = featureList + "," + feature;
-}
+    std::string enableFeaturesString = base::JoinString(enableFeatures, ",");
+    if (commandLine->HasSwitch(switches::kEnableFeatures)) {
+        std::string commandLineEnableFeatures = commandLine->GetSwitchValueASCII(switches::kEnableFeatures);
 
-static void appendToFeatureSwitch(base::CommandLine *commandLine, const char *featureSwitch, std::string feature)
-{
-    if (!commandLine->HasSwitch(featureSwitch)) {
-        commandLine->AppendSwitchASCII(featureSwitch, feature);
-    } else {
-        std::string featureList = commandLine->GetSwitchValueASCII(featureSwitch);
-        featureList = featureList + "," + feature;
-        commandLine->AppendSwitchASCII(featureSwitch, featureList);
+        for (const std::string &enableFeature : base::SplitString(commandLineEnableFeatures, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+            auto it = std::find(disableFeatures.begin(), disableFeatures.end(), enableFeature);
+            if (it == disableFeatures.end())
+                continue;
+
+            qWarning("An unsupported feature has been enabled from command line: %s\n"
+                     "The feature is enabled but there is no guarantee that it will work or not break QtWebEngine.", enableFeature.c_str());
+
+            // If a feature is disabled and enabled at the same time, then it will be disabled.
+            // Remove feature from the disable list to make it possible to override from command line.
+            disableFeatures.erase(it);
+        }
+
+        enableFeaturesString = enableFeaturesString + "," + commandLineEnableFeatures;
     }
+
+    std::string disableFeaturesString = base::JoinString(disableFeatures, ",");
+    if (commandLine->HasSwitch(switches::kDisableFeatures)) {
+        std::string commandLineDisableFeatures = commandLine->GetSwitchValueASCII(switches::kDisableFeatures);
+
+        for (const std::string &disableFeature : base::SplitString(commandLineDisableFeatures, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+            auto it = std::find(enableFeatures.begin(), enableFeatures.end(), disableFeature);
+            if (it == enableFeatures.end())
+                continue;
+
+            qWarning("An essential feature has been disabled from command line: %s\n"
+                     "The feature is disabled but there is no guarantee that it will not break QtWebEngine.", disableFeature.c_str());
+        }
+
+        disableFeaturesString = disableFeaturesString + "," + commandLineDisableFeatures;
+    }
+
+    commandLine->AppendSwitchASCII(switches::kEnableFeatures, enableFeaturesString);
+    commandLine->AppendSwitchASCII(switches::kDisableFeatures, disableFeaturesString);
+    base::FeatureList::InitializeInstance(enableFeaturesString, disableFeaturesString);
 }
 
 WebEngineContext::WebEngineContext()
@@ -538,7 +579,7 @@ WebEngineContext::WebEngineContext()
 #endif
 
     base::ThreadPoolInstance::Create("Browser");
-    m_contentRunner.reset(content::ContentMainRunner::Create());
+    m_contentRunner = content::ContentMainRunner::Create();
     m_browserRunner = content::BrowserMainRunner::Create();
 
 #ifdef Q_OS_LINUX
@@ -588,10 +629,10 @@ WebEngineContext::WebEngineContext()
 #if defined(Q_OS_OS2)
         parsedCommandLine->AppendSwitch(service_manager::switches::kNoSandbox);
 #elif defined(Q_OS_LINUX)
-        parsedCommandLine->AppendSwitch(service_manager::switches::kDisableSetuidSandbox);
+        parsedCommandLine->AppendSwitch(sandbox::policy::switches::kDisableSetuidSandbox);
 #endif
     } else {
-        parsedCommandLine->AppendSwitch(service_manager::switches::kNoSandbox);
+        parsedCommandLine->AppendSwitch(sandbox::policy::switches::kNoSandbox);
         qInfo() << "Sandboxing disabled by user.";
     }
 
@@ -624,55 +665,51 @@ WebEngineContext::WebEngineContext()
     // Do not advertise a feature we have removed at compile time
     parsedCommandLine->AppendSwitch(switches::kDisableSpeechAPI);
 
-    std::string disableFeatures;
-    std::string enableFeatures;
+    std::vector<std::string> disableFeatures;
+    std::vector<std::string> enableFeatures;
     // Needed to allow navigations within pages that were set using setHtml(). One example is
     // tst_QWebEnginePage::acceptNavigationRequest.
     // This is deprecated behavior, and will be removed in a future Chromium version, as per
     // upstream Chromium commit ba52f56207a4b9d70b34880fbff2352e71a06422.
-    appendToFeatureList(enableFeatures, features::kAllowContentInitiatedDataUrlNavigations.name);
+    enableFeatures.push_back(features::kAllowContentInitiatedDataUrlNavigations.name);
 
-    appendToFeatureList(enableFeatures, features::kTracingServiceInProcess.name);
+    enableFeatures.push_back(features::kTracingServiceInProcess.name);
 
     // The video-capture service is not functioning at this moment (since 69)
-    appendToFeatureList(disableFeatures, features::kMojoVideoCapture.name);
+    disableFeatures.push_back(features::kMojoVideoCapture.name);
 
 #if defined(Q_OS_LINUX)
     // broken and crashy (even upstream):
-    appendToFeatureList(disableFeatures, features::kFontSrcLocalMatching.name);
+    disableFeatures.push_back(features::kFontSrcLocalMatching.name);
 #endif
 
     // We don't support the skia renderer (enabled by default on Linux since 80)
-    appendToFeatureList(disableFeatures, features::kUseSkiaRenderer.name);
+    disableFeatures.push_back(features::kUseSkiaRenderer.name);
 
-    appendToFeatureList(disableFeatures, network::features::kDnsOverHttpsUpgrade.name);
+    disableFeatures.push_back(network::features::kDnsOverHttpsUpgrade.name);
 
     // When enabled, event.movement is calculated in blink instead of in browser.
-    appendToFeatureList(disableFeatures, features::kConsolidatedMovementXY.name);
+    disableFeatures.push_back(features::kConsolidatedMovementXY.name);
+
+    // Avoid crashing when websites tries using this feature (since 83)
+    disableFeatures.push_back(features::kInstalledApp.name);
 
     // Explicitly tell Chromium about default-on features we do not support
-    appendToFeatureList(disableFeatures, features::kBackgroundFetch.name);
-    appendToFeatureList(disableFeatures, features::kSmsReceiver.name);
-    appendToFeatureList(disableFeatures, features::kWebPayments.name);
-    appendToFeatureList(disableFeatures, features::kWebUsb.name);
-    appendToFeatureList(disableFeatures, media::kPictureInPicture.name);
-
-    // Breaks current colordialog tests.
-    appendToFeatureList(disableFeatures, features::kFormControlsRefresh.name);
+    disableFeatures.push_back(features::kBackgroundFetch.name);
+    disableFeatures.push_back(features::kSmsReceiver.name);
+    disableFeatures.push_back(features::kWebPayments.name);
+    disableFeatures.push_back(features::kWebUsb.name);
+    disableFeatures.push_back(media::kPictureInPicture.name);
 
     if (useEmbeddedSwitches) {
         // embedded switches are based on the switches for Android, see content/browser/android/content_startup_flags.cc
-        appendToFeatureList(enableFeatures, features::kOverlayScrollbar.name);
+        enableFeatures.push_back(features::kOverlayScrollbar.name);
         parsedCommandLine->AppendSwitch(switches::kEnableViewport);
         parsedCommandLine->AppendSwitch(switches::kMainFrameResizesAreOrientationChanges);
         parsedCommandLine->AppendSwitch(cc::switches::kDisableCompositedAntialiasing);
     }
 
-    appendToFeatureSwitch(parsedCommandLine, switches::kDisableFeatures, disableFeatures);
-    appendToFeatureSwitch(parsedCommandLine, switches::kEnableFeatures, enableFeatures);
-    base::FeatureList::InitializeInstance(
-        parsedCommandLine->GetSwitchValueASCII(switches::kEnableFeatures),
-        parsedCommandLine->GetSwitchValueASCII(switches::kDisableFeatures));
+    initializeFeatureList(parsedCommandLine, enableFeatures, disableFeatures);
 
     GLContextHelper::initialize();
 
@@ -842,6 +879,16 @@ printing::PrintJobManager* WebEngineContext::getPrintJobManager()
     return m_printJobManager.get();
 }
 #endif
+
+#if QT_CONFIG(webengine_webrtc) && QT_CONFIG(webengine_extensions)
+WebRtcLogUploader *WebEngineContext::webRtcLogUploader()
+{
+    if (!m_webrtcLogUploader)
+        m_webrtcLogUploader = std::make_unique<WebRtcLogUploader>();
+    return m_webrtcLogUploader.get();
+}
+#endif
+
 
 static QMutex s_spmMutex;
 QAtomicPointer<gpu::SyncPointManager> WebEngineContext::s_syncPointManager;

@@ -1,6 +1,6 @@
 /****************************************************************************
 **
-** Copyright (C) 2016 The Qt Company Ltd.
+** Copyright (C) 2020 The Qt Company Ltd.
 ** Contact: https://www.qt.io/licensing/
 **
 ** This file is part of the QtWebEngine module of the Qt Toolkit.
@@ -37,38 +37,20 @@
 **
 ****************************************************************************/
 
-#ifndef USER_SCRIPT_DATA_H
-#define USER_SCRIPT_DATA_H
+#include "messaging_delegate_qt.h"
 
-#include <QtCore/QHash>
-#include <string>
-#include "ipc/ipc_message_utils.h"
-#include "url/gurl.h"
+#include <QtGlobal>
 
-struct UserScriptData {
-    enum InjectionPoint {
-        AfterLoad,
-        DocumentLoadFinished,
-        DocumentElementCreation
-    };
+namespace extensions {
 
-    UserScriptData();
+MessagingDelegateQt::MessagingDelegateQt()
+{
+}
 
-    std::string source;
-    GURL url;
-    /*InjectionPoint*/uint8_t injectionPoint;
-    bool injectForSubframes;
-    uint worldId;
-    uint64_t scriptId;
-    std::vector<std::string> globs;
-    std::vector<std::string> excludeGlobs;
-    std::vector<std::string> urlPatterns;
-};
+std::unique_ptr<base::DictionaryValue> MessagingDelegateQt::MaybeGetTabInfo(content::WebContents *web_contents)
+{
+    Q_UNUSED(web_contents);
+    return nullptr;
+}
 
-QT_BEGIN_NAMESPACE
-
-Q_DECLARE_TYPEINFO(UserScriptData, Q_MOVABLE_TYPE);
-
-QT_END_NAMESPACE
-
-#endif // USER_SCRIPT_DATA_H
+} // namespace extensions

@@ -44,6 +44,7 @@
 #include "content/browser/web_contents/web_contents_view.h"
 
 #include "api/qtwebenginecoreglobal_p.h"
+#include "web_contents_adapter_client.h"
 
 namespace content {
 class WebContents;
@@ -59,11 +60,7 @@ class WebContentsViewQt
 public:
     static inline WebContentsViewQt *from(WebContentsView *view) { return static_cast<WebContentsViewQt*>(view); }
 
-    WebContentsViewQt(content::WebContents* webContents)
-        : m_webContents(webContents)
-        , m_client(nullptr)
-        , m_factoryClient(nullptr)
-    { }
+    WebContentsViewQt(content::WebContents *webContents);
 
     void setFactoryClient(WebContentsAdapterClient* client);
     void setClient(WebContentsAdapterClient* client);
@@ -90,9 +87,7 @@ public:
 
     gfx::NativeWindow GetTopLevelNativeWindow() const override { return nullptr; }
 
-    void GetContainerBounds(gfx::Rect* out) const override;
-
-    void SizeContents(const gfx::Size& size) override { }
+    gfx::Rect GetContainerBounds() const override;
 
     void Focus() override;
 
@@ -108,23 +103,25 @@ public:
 
     void FocusThroughTabTraversal(bool reverse) override;
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
     bool CloseTabAfterEventTrackingIfNeeded() override { QT_NOT_YET_IMPLEMENTED return false; }
-#endif // defined(OS_MACOSX)
+#endif // defined(OS_MAC)
 
     // content::RenderViewHostDelegateView overrides:
-    void StartDragging(const content::DropData& drop_data, blink::WebDragOperationsMask allowed_ops,
+    void StartDragging(const content::DropData& drop_data, blink::DragOperationsMask allowed_ops,
                        const gfx::ImageSkia& image, const gfx::Vector2d& image_offset,
-                       const content::DragEventSourceInfo& event_info,
-                       content::RenderWidgetHostImpl* source_rwh) override;
+                       const blink::mojom::DragEventSourceInfo &event_info,
+                       content::RenderWidgetHostImpl *source_rwh) override;
 
-    void UpdateDragCursor(blink::WebDragOperation dragOperation) override;
+    void UpdateDragCursor(blink::DragOperation dragOperation) override;
 
     void ShowContextMenu(content::RenderFrameHost *, const content::ContextMenuParams &params) override;
 
     void GotFocus(content::RenderWidgetHostImpl *render_widget_host) override;
     void LostFocus(content::RenderWidgetHostImpl *render_widget_host) override;
     void TakeFocus(bool reverse) override;
+
+    static WebEngineContextMenuData buildContextMenuData(const content::ContextMenuParams &params);
 
 private:
     content::WebContents *m_webContents;

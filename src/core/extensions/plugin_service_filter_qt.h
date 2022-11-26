@@ -1,6 +1,6 @@
 /****************************************************************************
 **
-** Copyright (C) 2020 The Qt Company Ltd.
+** Copyright (C) 2021 The Qt Company Ltd.
 ** Contact: https://www.qt.io/licensing/
 **
 ** This file is part of the QtWebEngine module of the Qt Toolkit.
@@ -37,39 +37,35 @@
 **
 ****************************************************************************/
 
-// Copyright 2013 The Chromium Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
+#ifndef PLUGIN_SERVICE_FILTER_QT
+#define PLUGIN_SERVICE_FILTER_QT
 
-#include "plugin_placeholder_qt.h"
+#include "content/public/browser/plugin_service_filter.h"
 
-#include "content/public/renderer/render_frame.h"
-#include "content/public/renderer/v8_value_converter.h"
-#include "gin/object_template_builder.h"
+#include "base/memory/singleton.h"
 
-namespace QtWebEngineCore {
+namespace extensions {
 
-// static
-gin::WrapperInfo PluginPlaceholderQt::kWrapperInfo = {gin::kEmbedderNativeGin};
+class PluginServiceFilterQt : public content::PluginServiceFilter {
+public:
+    static PluginServiceFilterQt* GetInstance();
 
-PluginPlaceholderQt::PluginPlaceholderQt(content::RenderFrame* render_frame,
-                                         const blink::WebPluginParams& params,
-                                         const std::string& html_data)
-    : PluginPlaceholderBase(render_frame, params, html_data)
-{}
+    bool IsPluginAvailable(int render_process_id,
+                           int render_frame_id,
+                           const GURL &url,
+                           const url::Origin &main_frame_origin,
+                           content::WebPluginInfo *plugin) override;
 
-PluginPlaceholderQt::~PluginPlaceholderQt() {}
+    bool CanLoadPlugin(int render_process_id,
+                       const base::FilePath &path) override;
 
-v8::Local<v8::Value> PluginPlaceholderQt::GetV8Handle(v8::Isolate* isolate)
-{
-    return gin::CreateHandle(isolate, this).ToV8();
-}
+private:
+    friend struct base::DefaultSingletonTraits<PluginServiceFilterQt>;
 
-gin::ObjectTemplateBuilder PluginPlaceholderQt::GetObjectTemplateBuilder(v8::Isolate* isolate)
-{
-    return gin::Wrappable<PluginPlaceholderQt>::GetObjectTemplateBuilder(isolate)
-        .SetMethod<void (QtWebEngineCore::PluginPlaceholderQt::*)()>(
-            "hide", &PluginPlaceholderQt::HideCallback);
-}
+    PluginServiceFilterQt();
+    ~PluginServiceFilterQt();
+};
 
-}  // namespace QtWebEngineCore
+} // namespace extensions
+
+#endif // PLUGIN_SERVICE_FILTER_QT

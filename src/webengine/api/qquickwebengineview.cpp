@@ -220,12 +220,14 @@ RenderWidgetHostViewQtDelegate *QQuickWebEngineViewPrivate::CreateRenderWidgetHo
     const bool hasWindowCapability = QGuiApplicationPrivate::platformIntegration()->hasCapability(QPlatformIntegration::MultipleWindows);
     RenderWidgetHostViewQtDelegateQuick *quickDelegate = new RenderWidgetHostViewQtDelegateQuick(client, /*isPopup = */ true);
     if (hasWindowCapability) {
-        RenderWidgetHostViewQtDelegateQuickWindow *wrapperWindow = new RenderWidgetHostViewQtDelegateQuickWindow(quickDelegate);
+        RenderWidgetHostViewQtDelegateQuickWindow *wrapperWindow =
+                new RenderWidgetHostViewQtDelegateQuickWindow(quickDelegate, q->window());
         wrapperWindow->setVirtualParent(q);
         quickDelegate->setParentItem(wrapperWindow->contentItem());
         return wrapperWindow;
     }
     quickDelegate->setParentItem(q);
+    quickDelegate->show();
     return quickDelegate;
 }
 
@@ -235,7 +237,6 @@ void QQuickWebEngineViewPrivate::contextMenuRequested(const WebEngineContextMenu
 
     m_contextMenuData = data;
 
-    QQuickWebEngineContextMenuRequest *request = new QQuickWebEngineContextMenuRequest(data);
     QQmlEngine *engine = qmlEngine(q);
 
     // TODO: this is a workaround for QTBUG-65044
@@ -243,6 +244,7 @@ void QQuickWebEngineViewPrivate::contextMenuRequested(const WebEngineContextMenu
         return;
 
     // mark the object for gc by creating temporary jsvalue
+    QQuickWebEngineContextMenuRequest *request = new QQuickWebEngineContextMenuRequest(data);
     engine->newQObject(request);
     Q_EMIT q->contextMenuRequested(request);
 
@@ -872,6 +874,11 @@ QQuickWebEngineView::QQuickWebEngineView(QQuickItem *parent)
     d->q_ptr = this;
     this->setActiveFocusOnTab(true);
     this->setFlags(QQuickItem::ItemIsFocusScope | QQuickItem::ItemAcceptsDrops);
+
+    connect(action(WebAction::Back), &QQuickWebEngineAction::enabledChanged,
+            this, &QQuickWebEngineView::canGoBackChanged);
+    connect(action(WebAction::Forward), &QQuickWebEngineAction::enabledChanged,
+            this, &QQuickWebEngineView::canGoForwardChanged);
 }
 
 QQuickWebEngineView::~QQuickWebEngineView()

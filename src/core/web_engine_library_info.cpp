@@ -45,9 +45,11 @@
 #include "base/files/file_util.h"
 #include "components/spellcheck/spellcheck_buildflags.h"
 #include "content/public/common/content_paths.h"
+#include "sandbox/policy/switches.h"
+#include "ui/base/l10n/l10n_util.h"
 #include "ui/base/ui_base_paths.h"
 #include "ui/base/ui_base_switches.h"
-#include "services/service_manager/sandbox/switches.h"
+
 #include "type_conversion.h"
 
 #include <QByteArray>
@@ -75,7 +77,7 @@ QString fallbackDir() {
     return directory;
 }
 
-#if defined(OS_MACOSX) && defined(QT_MAC_FRAMEWORK_BUILD)
+#if defined(OS_MAC) && defined(QT_MAC_FRAMEWORK_BUILD)
 static inline CFBundleRef frameworkBundle()
 {
     return CFBundleGetBundleWithIdentifier(CFSTR("org.qt-project.Qt.QtWebEngineCore"));
@@ -118,7 +120,7 @@ static QString getResourcesPath(CFBundleRef frameworkBundle)
 }
 #endif
 
-#if defined(OS_MACOSX)
+#if defined(OS_MAC)
 static QString getMainApplicationResourcesPath()
 {
     QString resourcesPath;
@@ -162,7 +164,7 @@ QString subProcessPath()
             // Only search in QTWEBENGINEPROCESS_PATH if set
             candidatePaths << fromEnv;
         } else {
-#if defined(OS_MACOSX) && defined(QT_MAC_FRAMEWORK_BUILD)
+#if defined(OS_MAC) && defined(QT_MAC_FRAMEWORK_BUILD)
             candidatePaths << getPath(frameworkBundle())
                               % QStringLiteral("/Helpers/" QTWEBENGINEPROCESS_NAME ".app/Contents/MacOS/" QTWEBENGINEPROCESS_NAME);
 #else
@@ -184,7 +186,7 @@ QString subProcessPath()
 
 #if defined(OS_WIN)
         base::CommandLine *parsedCommandLine = base::CommandLine::ForCurrentProcess();
-        if (!parsedCommandLine->HasSwitch(service_manager::switches::kNoSandbox)) {
+        if (!parsedCommandLine->HasSwitch(sandbox::policy::switches::kNoSandbox)) {
             if (WebEngineLibraryInfo::isUNCPath(processPath) || WebEngineLibraryInfo::isRemoteDrivePath(processPath))
                 qCritical("Can not launch QtWebEngineProcess from network path if sandbox is enabled: %s.", processPath.toUtf8().constData());
         }
@@ -200,7 +202,7 @@ QString localesPath()
 {
     static bool initialized = false;
     static QString potentialLocalesPath =
-#if defined(OS_MACOSX) && defined(QT_MAC_FRAMEWORK_BUILD)
+#if defined(OS_MAC) && defined(QT_MAC_FRAMEWORK_BUILD)
             getResourcesPath(frameworkBundle()) % QLatin1String("/qtwebengine_locales");
 #else
             QLibraryInfo::location(QLibraryInfo::TranslationsPath) % QDir::separator() % QLatin1String("qtwebengine_locales");
@@ -236,7 +238,7 @@ QString dictionariesPath()
             candidatePaths << fromEnv;
         } else {
             // First try to find dictionaries near the application.
-#ifdef OS_MACOSX
+#ifdef OS_MAC
             QString resourcesDictionariesPath = getMainApplicationResourcesPath()
                     % QDir::separator() % QLatin1String("qtwebengine_dictionaries");
             candidatePaths << resourcesDictionariesPath;
@@ -246,7 +248,7 @@ QString dictionariesPath()
             candidatePaths << applicationDictionariesPath;
 
             // Then try to find dictionaries near the installed library.
-#if defined(OS_MACOSX) && defined(QT_MAC_FRAMEWORK_BUILD)
+#if defined(OS_MAC) && defined(QT_MAC_FRAMEWORK_BUILD)
             QString frameworkDictionariesPath = getResourcesPath(frameworkBundle())
                     % QLatin1String("/qtwebengine_dictionaries");
             candidatePaths << frameworkDictionariesPath;
@@ -273,8 +275,10 @@ QString resourcesDataPath()
 {
     static bool initialized = false;
     static QString potentialResourcesPath =
-#if defined(OS_MACOSX) && defined(QT_MAC_FRAMEWORK_BUILD)
+#if defined(OS_MAC) && defined(QT_MAC_FRAMEWORK_BUILD)
             getResourcesPath(frameworkBundle());
+#elif defined(OS_MAC)
+            QLibraryInfo::location(QLibraryInfo::DataPath) % QLatin1String("/Resources");
 #else
             QLibraryInfo::location(QLibraryInfo::DataPath) % QLatin1String("/resources");
 #endif
@@ -347,27 +351,32 @@ base::string16 WebEngineLibraryInfo::getApplicationName()
     return toString16(qApp->applicationName());
 }
 
+std::string WebEngineLibraryInfo::getResolvedLocale()
+{
+    base::CommandLine *parsedCommandLine = base::CommandLine::ForCurrentProcess();
+    if (parsedCommandLine->HasSwitch(switches::kLang)) {
+        return parsedCommandLine->GetSwitchValueASCII(switches::kLang);
+    } else {
+        const QString &locale = QLocale().bcp47Name();
+        std::string resolvedLocale;
+        if (l10n_util::CheckAndResolveLocale(locale.toStdString(), &resolvedLocale))
+            return resolvedLocale;
+    }
+    return "en-US";
+}
+
 std::string WebEngineLibraryInfo::getApplicationLocale()
 {
     base::CommandLine *parsedCommandLine = base::CommandLine::ForCurrentProcess();
-    if (!parsedCommandLine->HasSwitch(switches::kLang)) {
-        const QString &locale = QLocale().bcp47Name();
-
-        // QLocale::bcp47Name returns "en" for American English locale. Chromium requires the "US" suffix
-        // to clarify the dialect and ignores the shorter version.
-        if (locale == "en")
-            return "en-US";
-
-        return locale.toStdString();
-    }
-
-    return parsedCommandLine->GetSwitchValueASCII(switches::kLang);
+    return parsedCommandLine->HasSwitch(switches::kLang)
+        ? parsedCommandLine->GetSwitchValueASCII(switches::kLang)
+        : QLocale().bcp47Name().toStdString();
 }
 
 #if defined(OS_WIN)
 bool WebEngineLibraryInfo::isRemoteDrivePath(const QString &path)
 {
-    WCHAR wDriveLetter[3];
+    WCHAR wDriveLetter[4] = { 0 };
     swprintf(wDriveLetter, L"%S", path.mid(0, 3).toStdString().c_str());
     return GetDriveType(wDriveLetter) == DRIVE_REMOTE;
 }

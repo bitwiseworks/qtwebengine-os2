@@ -43,7 +43,7 @@
 
 #include "gl_surface_qt.h"
 
-#if !defined(OS_MACOSX) && !defined(OS_OS2)
+#if !defined(OS_MAC) && !defined(OS_OS2)
 
 #include <QGuiApplication>
 #include "gl_context_qt.h"
@@ -254,6 +254,10 @@ UINT DirectCompositionSurfaceWin::GetOverlaySupportFlags(DXGI_FORMAT format)
     Q_UNUSED(format);
     return 0;
 }
+
+void DirectCompositionSurfaceWin::DisableDecodeSwapChain()
+{
+}
 } // namespace gl
 #endif
-#endif // !defined(OS_MACOSX) && !defined(OS_OS2)
+#endif // !defined(OS_MAC) && !defined(OS_OS2)

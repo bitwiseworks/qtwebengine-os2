@@ -1,6 +1,6 @@
 /****************************************************************************
 **
-** Copyright (C) 2020 The Qt Company Ltd.
+** Copyright (C) 2019 The Qt Company Ltd.
 ** Contact: https://www.qt.io/licensing/
 **
 ** This file is part of the QtWebEngine module of the Qt Toolkit.
@@ -37,42 +37,42 @@
 **
 ****************************************************************************/
 
-// Copyright 2013 The Chromium Authors. All rights reserved.
+// based on chrome/renderer/chrome_render_thread_observer.cc:
+// Copyright (c) 2012 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef PLUGIN_PLACEHOLDER_QT_H
-#define PLUGIN_PLACEHOLDER_QT_H
-
-#include "base/macros.h"
-#include "components/plugins/renderer/plugin_placeholder.h"
-#include "gin/handle.h"
-#include "gin/wrappable.h"
-#include "third_party/blink/public/web/web_plugin_params.h"
+#include "renderer/render_configuration.h"
+#include "user_resource_controller.h"
+#include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
 
 namespace QtWebEngineCore {
 
-// A basic placeholder that supports only hiding.
-class PluginPlaceholderQt final : public plugins::PluginPlaceholderBase
-                                , public gin::Wrappable<PluginPlaceholderQt>
+bool RenderConfiguration::m_isIncognitoProcess = false;
+
+void RenderConfiguration::RegisterMojoInterfaces(
+        blink::AssociatedInterfaceRegistry *associated_interfaces)
 {
-public:
-    static gin::WrapperInfo kWrapperInfo;
+    associated_interfaces->AddInterface(
+            base::Bind(&RenderConfiguration::OnRendererConfigurationAssociatedRequest,
+                       base::Unretained(this)));
+}
 
-    PluginPlaceholderQt(content::RenderFrame* render_frame,
-                        const blink::WebPluginParams& params,
-                        const std::string& html_data);
-    ~PluginPlaceholderQt() override;
+void RenderConfiguration::UnregisterMojoInterfaces(
+        blink::AssociatedInterfaceRegistry *associated_interfaces)
+{
+    associated_interfaces->RemoveInterface(qtwebengine::mojom::RendererConfiguration::Name_);
+}
 
-private:
-    // WebViewPlugin::Delegate methods:
-    v8::Local<v8::Value> GetV8Handle(v8::Isolate* isolate) final;
+void RenderConfiguration::SetInitialConfiguration(bool is_incognito_process)
+{
+    m_isIncognitoProcess = is_incognito_process;
+}
 
-    // gin::Wrappable method:
-    gin::ObjectTemplateBuilder GetObjectTemplateBuilder(
-        v8::Isolate* isolate) override;
-};
+void RenderConfiguration::OnRendererConfigurationAssociatedRequest(
+        mojo::PendingAssociatedReceiver<qtwebengine::mojom::RendererConfiguration> receiver)
+{
+    m_rendererConfigurationReceivers.Add(this, std::move(receiver));
+}
 
-}  // namespace QtWebEngineCore
-
-#endif  // PLUGIN_PLACEHOLDER_QT_H
+} // namespace

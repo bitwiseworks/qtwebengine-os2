@@ -289,22 +289,13 @@ void QWebEnginePagePrivate::loadFinished(bool success, const QUrl &url, bool isE
     Q_UNUSED(errorCode);
     Q_UNUSED(errorDescription);
 
-    if (isErrorPage) {
-        Q_ASSERT(settings->testAttribute(QWebEngineSettings::ErrorPageEnabled));
-        QTimer::singleShot(0, q, [q](){
-            emit q->loadFinished(false);
-        });
+    if (isErrorPage)
         return;
-    }
 
     isLoading = false;
-    // Delay notifying failure until the error-page is done loading.
-    // Error-pages are not loaded on failures due to abort.
-    if (success || errorCode == -3 /* ERR_ABORTED*/ || !settings->testAttribute(QWebEngineSettings::ErrorPageEnabled)) {
-        QTimer::singleShot(0, q, [q, success](){
-            emit q->loadFinished(success);
-        });
-    }
+    QTimer::singleShot(0, q, [q, success](){
+        emit q->loadFinished(success);
+    });
 }
 
 void QWebEnginePagePrivate::didPrintPageToPdf(const QString &filePath, bool success)
@@ -337,8 +328,13 @@ QWebEnginePagePrivate::adoptNewWindow(QSharedPointer<WebContentsAdapter> newWebC
     Q_UNUSED(targetUrl);
 
     QWebEnginePage *newPage = q->createWindow(toWindowType(disposition));
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     if (!newPage)
         return nullptr;
+#else
+    if (!newPage)
+        return adapter;
+#endif
 
     if (!newWebContents->webContents())
         return newPage->d_func()->adapter; // Reuse existing adapter
@@ -2214,7 +2210,7 @@ QWebEnginePage *QWebEnginePage::createWindow(WebWindowType type)
         if (newView)
             return newView->page();
     }
-    return 0;
+    return nullptr;
 }
 
 /*!
@@ -2521,6 +2517,10 @@ void QWebEnginePage::printToPdf(const QWebEngineCallback<const QByteArray&> &res
     \warning We guarantee that the callback (\a resultCallback) is always called, but it might be done
     during page destruction. When QWebEnginePage is deleted, the callback is triggered with an invalid
     value and it is not safe to use the corresponding QWebEnginePage or QWebEngineView instance inside it.
+
+    \note This function rasterizes the result when rendering onto \a printer. Please consider raising
+    the default resolution of \a printer to at least 300 DPI or using printToPdf() to produce
+    PDF file output more effectively.
 
     \since 5.8
 */
